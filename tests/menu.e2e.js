@@ -35,6 +35,15 @@ const { CATEGORIES, buildMenuBody } = require("../src/utils/menuBuilder");
   const hidden = [...new Set(registry.values())].filter((c) => !covered.has(c)).map((c) => c.name);
   check("every implemented command appears in the menu", hidden.length === 0, hidden.join(", "));
 
+  section("one working name per command");
+  // Commands that are NOT synonyms: one file serving several distinct commands, or names that change what the command does.
+  const DISTINCT = new Set(["setting", "fun", "tools", "imageai", "hangman", "quiz", "setmenu1", "blacklist", "requests", "antibot", "gpt", "randommovie"]);
+  const withAliases = [...new Set(registry.values())].filter((c) => (c.aliases || []).length && !DISTINCT.has(c.name)).map((c) => `${c.name}: ${c.aliases.join(",")}`);
+  check("no command keeps a duplicate name (only distinct-behaviour names remain)", withAliases.length === 0, withAliases.join(" | "));
+  const removed = ["tt", "ig", "s", "link", "del", "resetlink", "ttt", "youtube", "video", "tr", "ddg", "setonline", "id", "uptime", "short", "privacy", "admins", "ai", "ask", "imagine", "groupinfo", "wikipedia", "updatebio", "description", "setgdesc", "everyone", "dictionary", "ytdebug", "dlcheck", "updategname", "play", "music", "wouldyourather", "creategroup", "movie", "tmdb", "help", "eval", "botname", "setname", "groupstatus", "gstatus", "tostatusgroup"];
+  check("every removed duplicate name is really gone", removed.filter((n) => registry.has(n)).length === 0, removed.filter((n) => registry.has(n)).join(", "));
+  check("the kept names exist", ["instagram", "tiktok", "sticker", "togroupstatus", "gpt", "claude", "deepseek", "randomtv"].every((n) => registry.has(n)));
+
   section("rendering");
   const body = buildMenuBody(".", registry);
   check("uses the configured prefix", body.includes("│➽ .kick @user") && !body.includes("undefined"));
@@ -43,11 +52,12 @@ const { CATEGORIES, buildMenuBody } = require("../src/utils/menuBuilder");
   check("badges come from real permissions: .kick 👮, .restart 👑, .tagall 👮, .ping none", /│➽ \.kick @user 👮/.test(body) && /│➽ \.restart 👑/.test(body) && /│➽ \.tagall \[msg\] 👮/.test(body) && /│➽ \.ping\n/.test(body), body.split("\n").filter((l) => /kick|restart|ping$/.test(l)));
   check("setting-driven keys get the right badge: autotyping 👑, antilink 👮, welcome 👮", /\.autotyping [^\n]*👑/.test(body) && /\.antilink [^\n]*👮/.test(body) && /\.welcome [^\n]*👮/.test(body));
   check("leave is badged owner", /│➽ \.leave 👑/.test(body), body.split("\n").find((l) => /\.leave/.test(l)));
-  check("tostatusgroup shows the alias people use", /\.tostatusgroup[^\n]*\(also \.togroupstatus\)/.test(body));
+  check("group status is listed under its ONE name, .togroupstatus", /│➽ \.togroupstatus /.test(body) && !/tostatusgroup/.test(body));
   const titles = [...body.matchAll(/◈ ([^◈\n]+) ◈/g)].map((x) => x[1]);
   check("no duplicate category titles", new Set(titles).size === titles.length, titles);
   check("legend present", /👑 owner only · 👮 group admin · 👥 group only/.test(body));
-  const s = makeSock(); const st = makeStore();
+  // Style 2/3/4 still send the full text menu (as a picture/video caption) — that is the text this block verifies.
+  const s = makeSock(); const st = makeStore({ global: { menu: { style: 2 } } });
   await handler.handle(s, privateMsg(".menu"), ".menu", st.getSettings, st.saveSettings);
   const sentText = s.sent.map((x) => x.content.text || x.content.caption || "").join("\n");
   check("the real .menu command sends it (header + body)", /Plugins : \d+/.test(sentText) && /◈ 👥 GROUP ◈/.test(sentText) && /◈ 👑 OWNER ◈/.test(sentText), sentText.slice(0, 200));

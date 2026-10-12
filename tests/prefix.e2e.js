@@ -5,7 +5,7 @@ const prefix = require("../src/utils/prefix");
 const handler = require("../src/bot/handlers/commandHandler");
 const { processMessage } = require("../src/bot/events/messageHandler");
 
-const store = (p, extra = {}) => makeStore({ global: { ...(p === undefined ? {} : { prefix: p }), ...extra } });
+const store = (p, extra = {}) => makeStore({ global: { ...(p === undefined ? {} : { prefix: p }), menu: { style: 2 }, ...extra } }); // style 2 = text menu as picture caption (unchanged)
 const run = async (sock, m, st) => { const b = m.message.conversation || m.message.extendedTextMessage.text; await handler.handle(sock, m, b, st.getSettings, st.saveSettings); };
 const feed = async (sock, m, st) => { await processMessage(sock, m, st.getSettings, st.saveSettings); await sleep(40); };
 const priv = (text, o) => privateMsg(text, o);
@@ -59,7 +59,7 @@ const answered = (s) => s.sent.length > 0;
   s = makeSock(); st = store(".!*");
   await run(s, groupMsg(2, "!antilink warn"), st);
   check("a command that re-reads its own name (the .setting family) works with '!'", st.raw()[G].antilink === true && st.raw()[G].antiActions.antilink === "warn", [texts(s), st.raw()]);
-  for (const [cmdText, label] of [["!joke", "fun.js"], ["!password 10", "tools.js"], ["!hangmanstart", "hangman.js"], ["!ttt", "tictactoe"], ["!meme", "meme"]]) {
+  for (const [cmdText, label] of [["!joke", "fun.js"], ["!password 10", "tools.js"], ["!hangmanstart", "hangman.js"], ["!tictactoe", "tictactoe"], ["!meme", "meme"]]) {
     s = makeSock(); await run(s, priv(cmdText), store(".!*"));
     check(`'${cmdText}' (${label}) is recognised under '!'`, answered(s), texts(s));
   }

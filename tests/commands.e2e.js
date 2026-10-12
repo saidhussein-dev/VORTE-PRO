@@ -72,7 +72,9 @@ const OWNER = '255700000001@s.whatsapp.net', ADMIN_PHONE = '255700000002@s.whats
   r = await run(G, ADMIN_PHONE, '.revoke'); check('.revoke works for admin', r.texts[0]?.includes('NEWCODE123'));
   r = await run(G, ADMIN_PHONE, '.updategdesc Hello team'); check('.updategdesc sets description', r.calls[0]?.[1] === 'Hello team');
   r = await run(G, ADMIN_PHONE, '.add 255700000020 255700000021'); check('.add adds numbers', r.calls[0]?.[1] === 'add' && r.calls[0][2].length === 2, JSON.stringify(r));
-  r = await run(G, ADMIN_PHONE, '!requests'); check('!requests (alt prefix) lists pending', r.texts[0]?.includes('JOIN REQUESTS (2)'), r.texts[0]);
+  store.global = { ...(store.global || {}), prefix: '.!' };
+  r = await run(G, ADMIN_PHONE, '!requests'); check('!requests (alt prefix, PREFIX=.!) lists pending', r.texts[0]?.includes('JOIN REQUESTS (2)'), r.texts[0]);
+  delete store.global.prefix;
   r = await run(G, ADMIN_PHONE, '.acceptall'); check('.acceptall approves all', r.calls[0]?.[1] === 'approve' && r.calls[0][2].length === 2);
   r = await run(G, ADMIN_PHONE, '.reject 255700000010'); check('.reject rejects one specific', r.calls[0]?.[1] === 'reject' && r.calls[0][2].length === 1, JSON.stringify(r));
   r = await run(G, ADMIN_PHONE, '.delete'); check('.delete without reply gives usage', r.texts[0]?.includes('Reply to'));
@@ -137,13 +139,13 @@ const OWNER = '255700000001@s.whatsapp.net', ADMIN_PHONE = '255700000002@s.whats
   r = await run(G, ADMIN_PHONE, '.antibothelp'); check('.antibothelp explains manual detection', r.texts[0]?.includes("doesn't tell us"));
 
   console.log('\n[privacy / info / misc]');
-  r = await run(OWNER, OWNER, '.privacy'); check('.privacy alias works', r.texts[0]?.includes('last: contacts'), r.texts[0]);
+  r = await run(OWNER, OWNER, '.getprivacy'); check('.getprivacy works', r.texts[0]?.includes('last: contacts'), r.texts[0]);
   r = await run(OWNER, OWNER, '.blocklist'); check('.blocklist lists WA blocks', r.texts[0]?.includes('255700000099'));
   r = await run(G, MEMBER, '.getbio'); check('.getbio returns bio', r.texts[0]?.includes('hello bio'), r.texts[0]);
   r = await run(OWNER, OWNER, '.groupsprivacy contacts'); check('.groupsprivacy calls Baileys API', r.calls[0]?.[1] === 'contacts');
-  r = await run(G, MEMBER, '.ownernumber'); check('.ownernumber is view-only', r.texts[0]?.includes('+255700000001'));
+  r = await run(G, MEMBER, '.ownernumber'); check('.ownernumber is view-only and shows the number readably', r.texts[0]?.includes('+255 700 000 001'), r.texts[0]);
   r = await run(G, MEMBER, '.channel'); check('.channel shares link', r.texts[0]?.includes('whatsapp.com/channel'));
-  r = await run(OWNER, OWNER, '.prefix #'); check('.prefix sets custom prefix', store.global?.customPrefix === '#');
+  r = await run(OWNER, OWNER, '.prefix .#'); check('.prefix sets the prefixes (. and #)', store.global?.prefix === '.#', JSON.stringify(store.global));
   r = await run(G, MEMBER, '#dice'); check('custom prefix "#" now dispatches commands', r.texts[0]?.includes('rolled'), JSON.stringify(r));
   r = await run(OWNER, OWNER, '.online on'); check('.online on persists', store.global?.online === true);
   r = await run(OWNER, OWNER, '.ownername Said'); check('.ownername persists', store.global?.ownerName === 'Said');

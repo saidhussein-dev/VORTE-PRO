@@ -13,9 +13,11 @@ case "$*" in *"height<=480"*) echo "ERROR: Requested format is not available" >&
 case "$*" in *private*) echo "ERROR: Private video. Sign in" >&2; exit 1;; esac
 case "$*" in *slow*) sleep 5; exit 0;; esac
 case "$*" in *--dump-single-json*) echo '{"title":"Fake Title"}'; exit 0;; esac
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "--output" ] && out="$a"; prev="$a"; done
+out=""; prev=""; ext="mp4"
+for a in "$@"; do [ "$prev" = "--output" ] && out="$a"; [ "$a" = "--extract-audio" ] && ext="mp3"; prev="$a"; done
+out=$(printf '%s' "$out" | sed "s/%(ext)s/$ext/")
 [ -n "$out" ] && echo data > "$out"
+case "$*" in *--print*) printf '{"title": "Fake Title", "ext": "%s", "filepath": "%s"}\\n' "$ext" "$out";; esac
 exit 0
 `, { mode: 0o755 });
 process.env.YTDLP_PATH = fake;
@@ -50,11 +52,11 @@ const downloaders = require("../src/services/downloaders");
   const res = await ytdlp.search("hello world", 1);
   check("search maps entries to watch URLs", res[0]?.url === "https://www.youtube.com/watch?v=abc" && res[0].title === "Song A", JSON.stringify(res));
   const v = await ytdlp.downloadVideo("https://example.com/v");
-  check("downloadVideo returns existing file + title", fs.existsSync(v.filePath) && v.title === "Fake Title" && v.sizeBytes > 0, JSON.stringify(v));
+  check("downloadVideo returns existing file + title (from the single call) + real format", fs.existsSync(v.filePath) && v.title === "Fake Title" && v.sizeBytes > 0 && v.format === "mp4", JSON.stringify(v));
   ytdlp.cleanup(v.filePath);
   check("cleanup removes temp file", !fs.existsSync(v.filePath));
   const au = await ytdlp.downloadAudio("https://example.com/a");
-  check("downloadAudio returns file", fs.existsSync(au.filePath) && /\.(mp3|m4a)$/.test(au.filePath), JSON.stringify(au));
+  check("downloadAudio returns file", fs.existsSync(au.filePath) && /\.(mp3|m4a)$/.test(au.filePath) && au.title === "Fake Title" && /^(mp3|m4a)$/.test(au.format), JSON.stringify(au));
   ytdlp.cleanup(au.filePath);
   let err = await ytdlp.downloadVideo("https://example.com/private").catch(e => e);
   check("private video -> friendly error, no temp leftovers", err.message === "This content is private or requires login.", err.message);

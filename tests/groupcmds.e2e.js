@@ -89,7 +89,7 @@ const isAdmin = (s, n, lid = true) => !!s.state.participants.find((p) => p.id ==
     check("setgroupname -> subject really changed", s.state.subject === "Brand New Name" && /Group name updated to: Brand New Name/.test(lastText(s)), texts(s));
     check("fresh read right after the change returns the NEW name (cache invalidated)", (await identity.getMetadata(s, G)).subject === "Brand New Name");
     s = mk(); await run(s, msg(2, ".updategname Alias Works"));
-    check(".updategname alias works", s.state.subject === "Alias Works");
+    check(".updategname (removed duplicate name) no longer exists", s.state.subject !== "Alias Works" && !apiCalls(s).length, texts(s));
     s = mk({ lag: true }); await run(s, msg(2, ".setgroupname Never Applied"));
     check("name change WhatsApp ignored -> not reported as updated", /couldn't change the group name/.test(lastText(s)) && !/updated to/.test(lastText(s)), texts(s));
     s = mk(); await run(s, msg(2, ".setgroupname " + "x".repeat(101)));

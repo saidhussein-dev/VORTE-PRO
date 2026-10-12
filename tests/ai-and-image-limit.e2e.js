@@ -2,6 +2,7 @@
 // Run them from the repo root on a SCRATCH COPY, never on a live install with real data:
 //   node tests/ai-and-image-limit.e2e.js
 process.env.OWNER_1 = '255700000001';
+process.env.PREFIX = '.!';   // two prefixes allowed, so the 'switching prefix' check still has something to switch to
 process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';   // only Anthropic configured
 const p = process.cwd();
 const axios = require(require.resolve('axios', { paths: [p + '/src'] }));
@@ -56,8 +57,8 @@ const check = (n, c, d) => { c ? (pass++, console.log('  ✅', n)) : (fail++, co
   check('blocked request never hit the image API', genCalls === callsBefore);
   r = await run(A, '!image via a different prefix');
   check('switching prefix does not bypass the limit', r[0]?.includes('limit'), JSON.stringify(r));
-  r = await run(A, '.imagine via alias');
-  check('using the alias does not bypass the limit', r[0]?.includes('limit'), JSON.stringify(r));
+  r = await run(A, '.luxurygold via a style command');
+  check('using another image command does not bypass the limit', r[0]?.includes('limit'), JSON.stringify(r));
   r = await run(A, '.cartoonstyle a dog');
   check('.imageai style commands share the same limit', r[0]?.includes('limit'), JSON.stringify(r));
   r = await run(B, '.image cat');
