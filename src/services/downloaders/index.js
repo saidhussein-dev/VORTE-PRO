@@ -70,7 +70,7 @@ async function resolveSearchQuery(query) {
 }
 
 /**
- * Search-and-download audio (what .song / .play use).
+ * Search-and-download audio (what .song uses).
  * @param {string} query
  */
 async function searchAndDownloadAudio(query, opts) {
