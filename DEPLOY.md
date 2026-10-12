@@ -30,7 +30,7 @@ How the bot treats it:
 ### Security switches (both default to OFF)
 | Variable | Effect |
 |---|---|
-| `ENABLE_EVAL=true` | Enables the owner-only `.sudo`/`.eval` code-execution command. It can read your API keys and session — only enable it if you understand the risk. |
+| `ENABLE_EVAL=true` | Enables the owner-only `.sudo` code-execution command. It can read your API keys and session — only enable it if you understand the risk. |
 | `ENABLE_QR_PAGE=true` | Serves the login QR at `/qr` over HTTP. A browser-visible login QR is effectively a credential; prefer the terminal QR. |
 
 ### Pairing-site deployment
