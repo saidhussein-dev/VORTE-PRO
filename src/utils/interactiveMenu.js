@@ -218,13 +218,35 @@ function unwrap(message) {
   return msg;
 }
 
+/** Button label -> key, for replies that carry the label but no id (some WhatsApp versions). */
+const LABEL_TO_KEY = new Map([...GROUPS.map((g) => [g.label.toLowerCase(), g.key]), ["contact owner", CONTACT_KEY], ["owner contact", CONTACT_KEY]]);
+
+/** The raw response node of any button / list / interactive reply, or null (used to log taps we do not recognise). */
+function responseNode(message) {
+  const msg = unwrap(message);
+  if (!msg) return null;
+  return msg.interactiveResponseMessage || msg.buttonsResponseMessage || msg.listResponseMessage || msg.templateButtonReplyMessage || null;
+}
+
 /** The button id inside an interactive/button/list response, or null. */
 function buttonIdOf(message) {
   const msg = unwrap(message);
   if (!msg) return null;
   const params = msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
-  if (params) { try { const id = JSON.parse(params).id; if (id) return String(id); } catch { /* not JSON */ } }
-  return msg.buttonsResponseMessage?.selectedButtonId || msg.listResponseMessage?.singleSelectReply?.selectedRowId || msg.templateButtonReplyMessage?.selectedId || null;
+  if (params) {
+    try {
+      const p = JSON.parse(params);
+      if (p.id) return String(p.id);
+      // no id in the reply: fall back to the label of the button / row that was tapped
+      const key = LABEL_TO_KEY.get(String(p.display_text || p.title || "").trim().toLowerCase());
+      if (key) return ID_PREFIX + key;
+    } catch { /* not JSON */ }
+  }
+  const direct = msg.buttonsResponseMessage?.selectedButtonId || msg.listResponseMessage?.singleSelectReply?.selectedRowId || msg.templateButtonReplyMessage?.selectedId;
+  if (direct) return direct;
+  const label = msg.interactiveResponseMessage?.body?.text || msg.buttonsResponseMessage?.selectedDisplayText || msg.listResponseMessage?.title || msg.templateButtonReplyMessage?.selectedDisplayText;
+  const key = LABEL_TO_KEY.get(String(label || "").trim().toLowerCase());
+  return key ? ID_PREFIX + key : null;
 }
 
 /**
@@ -242,5 +264,5 @@ function responseToCommand(message, prefix) {
 module.exports = {
   BRAND, GITHUB_URL, ID_PREFIX, GROUPS, CONTACT_KEY, KEYS, deps,
   plainTitle, categoryText, buildInteractive, buttons, fallbackText,
-  sendMainMenu, sendCategory, sendOwnerContact, buttonIdOf, responseToCommand
+  sendMainMenu, sendCategory, sendOwnerContact, buttonIdOf, responseNode, responseToCommand
 };
