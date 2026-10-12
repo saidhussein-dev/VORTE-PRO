@@ -8,6 +8,7 @@ const automation = require("../../utils/automation");
 const antiDelete = require("../../utils/antiDelete");
 const antiActions = require("../../utils/antiActions");
 const prefixLib = require("../../utils/prefix");
+const interactiveMenu = require("../../utils/interactiveMenu");
 
 const lastCommand = {};
 const recentMessages = {}; // for antispam flood detection
@@ -84,9 +85,18 @@ async function processMessage(sock, m, getSettings, saveSettings) {
     m.message?.extendedTextMessage?.text ||
     m.message?.imageMessage?.caption ||
     m.message?.videoMessage?.caption ||
+    // a tap on one of the VORTE PRO menu buttons arrives as a response, not as text: treat it as ".menu <key>"
+    interactiveMenu.responseToCommand(m.message, prefixLib.display(settings)) ||
     "";
 
   const body = (msgText || "").trim();
+
+  // A button/list tap that is not one of ours (or that we could not read): say so in the console, with what
+  // WhatsApp actually sent, instead of ignoring it silently.
+  if (!body) {
+    const tap = interactiveMenu.responseNode(m.message);
+    if (tap) console.log("🔘 button tap NOT recognised (sent by WhatsApp as):", JSON.stringify(tap));
+  }
 
   // Log incoming message to console for tracking
   if (body) {
