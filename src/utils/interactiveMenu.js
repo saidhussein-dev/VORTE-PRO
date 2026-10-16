@@ -48,13 +48,18 @@ const deps = {
     return deps.baileys().prepareWAMessageMedia(content, { upload: sock.waUploadToServer });
   },
   // Sends the interactive message. Throws if it cannot be sent.
-  async relayInteractive(sock, chat, content, quoted) {
+  // Built the way the maintained Baileys button helpers do it: the interactiveMessage sits directly in the message
+  // (NOT inside a viewOnceMessage envelope), a V2 message id, and the biz/interactive/native_flow node on the stanza.
+  async relayInteractive(sock, chat, content) {
     const baileys = deps.baileys();
     const isGroup = String(chat).endsWith("@g.us");
-    const msg = baileys.generateWAMessageFromContent(chat, content, { userJid: sock.user?.id, quoted });
+    const userJid = sock.authState?.creds?.me?.id || sock.user?.id;
+    const msg = baileys.generateWAMessageFromContent(chat, content, {
+      logger: sock.logger, userJid, messageId: baileys.generateMessageIDV2(userJid), timestamp: new Date()
+    });
     const additionalNodes = [{ tag: "biz", attrs: {}, content: [{ tag: "interactive", attrs: { type: "native_flow", v: "1" }, content: [{ tag: "native_flow", attrs: { v: "9", name: "mixed" } }] }] }];
     if (!isGroup) additionalNodes.push({ tag: "bot", attrs: { biz_bot: "1" } });
-    await sock.relayMessage(chat, msg.message, { messageId: msg.key.id, additionalNodes });
+    await sock.relayMessage(chat, msg.message, { messageId: msg.key.id, additionalAttributes: {}, additionalNodes });
     return msg;
   }
 };
@@ -113,26 +118,55 @@ function infoLines({ prefix, mode, plugins, sock }) {
   ];
 }
 
+/**
+ * The block above the categories: the full original header (name box + Owner, Owner no, Bot no., Prefix, Version, Mode,
+ * Plugins, Speed, Usage, Ram) when the menu command supplies it as info.headerText; otherwise the short info lines.
+ */
+function intro(info) {
+  return info.headerText ? String(info.headerText).trim() : `${BRAND}\n\n${infoLines(info).join("\n")}`;
+}
+
 const reply = (display_text, key) => ({ name: "quick_reply", buttonParamsJson: JSON.stringify({ display_text, id: ID_PREFIX + key }) });
 const link = (display_text, url) => ({ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text, url, merchant_url: url }) });
 
-/** The button list, in display order. */
-function buttons() {
-  const direct = GROUPS.filter((g) => g.direct).map((g) => reply(g.label, g.key));
+/** wa.me link that opens a chat with `number` and (optionally) puts `text` in the box, ready to send. */
+const waLink = (number, text) => `https://wa.me/${number}${text ? "?text=" + encodeURIComponent(text) : ""}`;
+
+/**
+ * The button list, in display order.
+ *
+ * Normal case: real buttons. Tapping Download / Group / Owner Commands, a row of "More Categories", or Contact Owner makes
+ * WhatsApp send a reply to the bot, which runs the command at once (see responseToCommand).
+ *
+ * ctx.linkMode (the person asking is the bot's OWN account, i.e. the owner on the paired number): WhatsApp does not let an
+ * account press buttons on its own outgoing messages, so reply buttons would be dead there. That one case gets link buttons
+ * instead: they open the chat with the command already typed in, and the owner presses send.
+ * @param {{prefix?: string, sock?: object, linkMode?: boolean}} [ctx]
+ */
+function buttons(ctx = {}) {
+  const prefix = ctx.prefix || ".";
+  const botNum = botInfo.botNumber(ctx.sock);
+  const ownerNum = botInfo.ownerNumbers(ctx.sock)[0];
+  const direct = GROUPS.filter((g) => g.direct);
   const more = GROUPS.filter((g) => !g.direct);
-  return [
-    link("WhatsApp Channel", config.channel.url),
-    link("GitHub Repository", GITHUB_URL),
-    reply("Contact Owner", CONTACT_KEY),
-    ...direct,
-    {
-      name: "single_select",
-      buttonParamsJson: JSON.stringify({
-        title: "More Categories",
-        sections: [{ title: "Categories", rows: more.map((g) => ({ header: "", title: g.label, description: "", id: ID_PREFIX + g.key })) }]
-      })
-    }
-  ];
+  const out = [link("WhatsApp Channel", config.channel.url), link("GitHub Repository", GITHUB_URL)];
+
+  if (ctx.linkMode && botNum) {
+    out.push(ownerNum ? link("Contact Owner", waLink(ownerNum)) : reply("Contact Owner", CONTACT_KEY));
+    for (const g of direct) out.push(link(g.label, waLink(botNum, `${prefix}menu ${g.key}`)));
+    out.push(link("All Commands", waLink(botNum, `${prefix}menu all`)));
+    return out;
+  }
+  out.push(reply("Contact Owner", CONTACT_KEY));
+  for (const g of direct) out.push(reply(g.label, g.key));
+  out.push({
+    name: "single_select",
+    buttonParamsJson: JSON.stringify({
+      title: "More Categories",
+      sections: [{ title: "Categories", rows: more.map((g) => ({ header: "", title: g.label, description: "", id: ID_PREFIX + g.key })) }]
+    })
+  });
+  return out;
 }
 
 /**
@@ -143,27 +177,34 @@ function buttons() {
  */
 function buildInteractive(info, mediaMsg) {
   const { proto } = deps.baileys();
-  const lines = `${infoLines(info).join("\n")}\n\nSelect a category to see its commands.`;
-  const body = mediaMsg ? `${BRAND}\n\n${lines}` : lines;
-  return {
-    viewOnceMessage: {
-      message: {
-        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
-        interactiveMessage: proto.Message.InteractiveMessage.create({
-          header: proto.Message.InteractiveMessage.Header.create(mediaMsg ? { title: "", subtitle: "", hasMediaAttachment: true, ...mediaMsg } : { title: BRAND, subtitle: "", hasMediaAttachment: false }),
-          body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-          footer: proto.Message.InteractiveMessage.Footer.create({ text: "Tap a button to continue" }),
-          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: buttons(), messageParamsJson: "" })
-        })
-      }
-    }
-  };
+  const others = GROUPS.filter((g) => !g.direct).map((g) => g.key).join(" | ");
+  const prompt = info.linkMode
+    ? `Tap a category, then press send to see its commands.\nOther categories: ${info.prefix}menu ${others}`
+    : "Select a category to see its commands.";
+  const boxed = !!info.headerText; // the original header already shows the name in its box
+  const lines = `${intro(info)}\n\n${prompt}`;
+  const body = mediaMsg && !boxed ? `${BRAND}\n\n${lines}` : lines;
+  const header = mediaMsg
+    ? { title: "", subtitle: "", hasMediaAttachment: true, ...mediaMsg }
+    : boxed ? null : { title: BRAND, subtitle: "", hasMediaAttachment: false };
+  const interactiveMessage = proto.Message.InteractiveMessage.create({
+    ...(header ? { header: proto.Message.InteractiveMessage.Header.create(header) } : {}),
+    body: proto.Message.InteractiveMessage.Body.create({ text: body }),
+    footer: proto.Message.InteractiveMessage.Footer.create({ text: "Tap a button to continue" }),
+    nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons: buttons(info), messageParamsJson: "" })
+  });
+  // Default: the interactiveMessage directly. MENU_WRAP=viewonce puts it in the older viewOnceMessage envelope instead
+  // (an environment switch, so the other form can be tried without touching code).
+  if (String(process.env.MENU_WRAP || "").toLowerCase() === "viewonce") {
+    return { viewOnceMessage: { message: { messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 }, interactiveMessage } } };
+  }
+  return { interactiveMessage };
 }
 
 /** Plain-text menu used when the interactive message cannot be sent. Same facts, no buttons, no emojis. */
 function fallbackText(info) {
   const cats = GROUPS.map((g) => `│➽ ${info.prefix}menu ${g.key}   ${g.label}`).join("\n");
-  return `${BRAND}\n\n${infoLines(info).join("\n")}\n\n┏▣ ◈ COMMAND CATEGORIES ◈\n${cats}\n│➽ ${info.prefix}menu ${CONTACT_KEY}   Contact Owner\n┗▣\n\n${config.channel.name}: ${config.channel.url}\nGitHub: ${GITHUB_URL}`;
+  return `${intro(info)}\n\n┏▣ ◈ COMMAND CATEGORIES ◈\n${cats}\n│➽ ${info.prefix}menu ${CONTACT_KEY}   Contact Owner\n┗▣\n\n${config.channel.name}: ${config.channel.url}\nGitHub: ${GITHUB_URL}`;
 }
 
 /**
@@ -263,6 +304,6 @@ function responseToCommand(message, prefix) {
 
 module.exports = {
   BRAND, GITHUB_URL, ID_PREFIX, GROUPS, CONTACT_KEY, KEYS, deps,
-  plainTitle, categoryText, buildInteractive, buttons, fallbackText,
+  plainTitle, infoLines, intro, categoryText, buildInteractive, buttons, fallbackText,
   sendMainMenu, sendCategory, sendOwnerContact, buttonIdOf, responseNode, responseToCommand
 };
