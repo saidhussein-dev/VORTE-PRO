@@ -1,3 +1,4 @@
+//This is just a test 
 // Shared test harness: a STATEFUL fake WhatsApp socket + group, and tiny assertion helpers.
 // The fake group really changes when the bot calls the Baileys functions (like WhatsApp does),
 // so tests prove behaviour, not just "a function was called".
