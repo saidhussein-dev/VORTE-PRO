@@ -269,6 +269,12 @@ function responseNode(message) {
   return msg.interactiveResponseMessage || msg.buttonsResponseMessage || msg.listResponseMessage || msg.templateButtonReplyMessage || null;
 }
 
+/** Is this message a reply to one of our menus: a button / list tap, or a poll vote? */
+function isMenuReply(message) {
+  const msg = unwrap(message);
+  return !!(msg && (responseNode(message) || msg.pollUpdateMessage));
+}
+
 /** The button id inside an interactive/button/list response, or null. */
 function buttonIdOf(message) {
   const msg = unwrap(message);
@@ -305,5 +311,5 @@ function responseToCommand(message, prefix) {
 module.exports = {
   BRAND, GITHUB_URL, ID_PREFIX, GROUPS, CONTACT_KEY, KEYS, deps,
   plainTitle, infoLines, intro, categoryText, buildInteractive, buttons, fallbackText,
-  sendMainMenu, sendCategory, sendOwnerContact, buttonIdOf, responseNode, responseToCommand
+  sendMainMenu, sendCategory, sendOwnerContact, buttonIdOf, responseNode, isMenuReply, responseToCommand
 };
