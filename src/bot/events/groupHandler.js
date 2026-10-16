@@ -5,6 +5,7 @@ const groupOps = require("../../utils/groupOps");
 const antiActions = require("../../utils/antiActions");
 
 const { buildWelcome } = require("../../utils/welcomeMessage");
+const welcomePicture = require("../../utils/welcomePicture");
 
 function applyTemplate(template, user, groupName) {
   return template
@@ -41,20 +42,23 @@ async function handleGroupUpdate(sock, update, getSettings) {
     const metadata = await sock.groupMetadata(id);
     const groupName = metadata.subject;
 
+    const rawByUser = new Map((update.participants || []).map((p) => [typeof p === "string" ? p : (p.id || p.jid), p]));
     for (let user of participants) {
-      let pp;
-      try {
-        pp = await sock.profilePictureUrl(user, "image");
-      } catch {
-        pp = "https://i.imgur.com/JP1gK9C.png";
-      }
-
       if (action === "add" && chatSetting.welcome) {
         // Real group description (fetched fresh on every join); the default rules only when there is none.
         const { caption, followUp } = buildWelcome({ user, groupName, description: metadata.desc, template: chatSetting.welcomeMessage });
-        try {
-          await sock.sendMessage(id, { image: { url: pp }, caption, mentions: [user] });
-        } catch (e) { // picture could not be fetched/sent — the welcome text must still go out
+        // The picture of the member WHO JOINED (every address we know for them), else the group's picture, else none.
+        let pic = null;
+        try { pic = await welcomePicture.findWelcomePicture(sock, id, rawByUser.get(user) || user); }
+        catch (e) { console.error("⚠️ welcome picture lookup failed:", e.message); }
+        let sentImage = false;
+        if (pic) {
+          try {
+            await sock.sendMessage(id, { image: pic.image, caption, mentions: [user] });
+            sentImage = true;
+          } catch (e) { console.error("⚠️ welcome picture could not be sent, sending text:", e.message); }
+        }
+        if (!sentImage) { // no picture (or it could not be sent) — the welcome text must still go out
           await sock.sendMessage(id, { text: [caption, followUp].filter(Boolean).join("\n\n"), mentions: [user] });
           continue;
         }
