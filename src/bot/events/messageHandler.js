@@ -9,6 +9,7 @@ const antiDelete = require("../../utils/antiDelete");
 const antiActions = require("../../utils/antiActions");
 const prefixLib = require("../../utils/prefix");
 const interactiveMenu = require("../../utils/interactiveMenu");
+const pollMenu = require("../../utils/ownerPollMenu");
 
 const lastCommand = {};
 const recentMessages = {}; // for antispam flood detection
@@ -87,6 +88,8 @@ async function processMessage(sock, m, getSettings, saveSettings) {
     m.message?.videoMessage?.caption ||
     // a tap on one of the VORTE PRO menu buttons arrives as a response, not as text: treat it as ".menu <key>"
     interactiveMenu.responseToCommand(m.message, prefixLib.display(settings)) ||
+    // the owner (bot's own account) taps an option of the menu poll: that is a vote, treat it as ".menu <key>"
+    pollMenu.commandFromVote(sock, m, prefixLib.display(settings)) ||
     "";
 
   const body = (msgText || "").trim();
@@ -96,6 +99,10 @@ async function processMessage(sock, m, getSettings, saveSettings) {
   if (!body) {
     const tap = interactiveMenu.responseNode(m.message);
     if (tap) console.log("🔘 button tap NOT recognised (sent by WhatsApp as):", JSON.stringify(tap));
+    else if (process.env.DEBUG_TAPS === "true" && chat !== "status@broadcast") {
+      // temporary: shows what kind of message arrived when it has no text (set DEBUG_TAPS=true, tap a button, read this line)
+      console.log("📩 message without text, type(s):", Object.keys(m.message || {}).join(", ") || "(empty)", "| from:", sender);
+    }
   }
 
   // Log incoming message to console for tracking
