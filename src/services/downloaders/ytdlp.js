@@ -140,7 +140,11 @@ function collect(base, stdout, fallbackTitle) {
   }
   if (!file) throw new Error("yt-dlp reported success but no output file was found.");
   removeFamily(base, file);
-  return { filePath: file, title: printed?.title || fallbackTitle, sizeBytes: fs.statSync(file).size, format: path.extname(file).slice(1).toLowerCase() || printed?.ext || "" };
+  return {
+    filePath: file, title: printed?.title || fallbackTitle, sizeBytes: fs.statSync(file).size,
+    format: path.extname(file).slice(1).toLowerCase() || printed?.ext || "",
+    formatId: printed?.format_id || "", height: Number(printed?.height) || 0
+  };
 }
 
 const NEEDS_FFMPEG_MSG = "This source serves picture and sound as separate streams, and joining them needs ffmpeg — which couldn't be set up on this host.";
@@ -156,23 +160,32 @@ const NEEDS_FFMPEG_MSG = "This source serves picture and sound as separate strea
  */
 async function downloadVideo(url, opts = {}) {
   if (!(await ensureBinary())) throw new Error("yt-dlp is not available on this host.");
-  const maxHeight = opts.maxHeight || 480; // WhatsApp-friendly default; avoids huge files
+  // TikTok (opts.platform === "tiktok"): the best resolution the source has (no 480p cap) and NEVER the format TikTok
+  // labels "download", which is the one with the watermark burned in. If the source offers nothing else, the last
+  // attempt takes what exists and the result carries formatId "download" so the command can say so honestly.
+  const tiktok = opts.platform === "tiktok";
+  const maxHeight = opts.maxHeight || (tiktok ? 4320 : 480); // 480: WhatsApp-friendly default for everything else
   const ff = await ensureFfmpeg();
   const base = newBase();
-  const h = `[height<=?${maxHeight}]`; // "<=?" keeps formats whose height is unknown (TikTok/Instagram often report none)
+  const h = tiktok ? "" : `[height<=?${maxHeight}]`; // "<=?" keeps formats whose height is unknown (TikTok/Instagram often report none)
+  const clean = tiktok ? "[format_id!=download]" : "";
   const common = {
     output: path.join(TMP_DIR, `${base}.%(ext)s`),
-    formatSort: `res:${maxHeight},vcodec:h264,acodec:aac`,
-    print: "after_move:%(.{title,ext,filepath})j",
+    formatSort: tiktok ? "res,vcodec:h264,acodec:aac" : `res:${maxHeight},vcodec:h264,acodec:aac`,
+    print: "after_move:%(.{title,ext,filepath,format_id,height})j",
     noQuiet: true,       // --print silences yt-dlp; we want its messages (e.g. "file larger than max-filesize")
     noProgress: true,
     noWarnings: true,
     noPlaylist: true,
     maxFilesize: `${opts.maxFilesizeMB || DEFAULT_MAX_FILESIZE_MB}M`
   };
-  const attempts = ff
-    ? [{ format: `bv*${h}+ba/b${h}/bv*+ba/b`, mergeOutputFormat: "mp4" }, { format: "b", mergeOutputFormat: "mp4" }]
-    : [{ format: `b${h}[ext=mp4]/b${h}/b` }];
+  const attempts = tiktok
+    ? (ff
+      ? [{ format: `bv*${clean}+ba/b${clean}`, mergeOutputFormat: "mp4" }, { format: "b", mergeOutputFormat: "mp4" }]
+      : [{ format: `b${clean}[ext=mp4]/b${clean}` }, { format: "b" }])
+    : (ff
+      ? [{ format: `bv*${h}+ba/b${h}/bv*+ba/b`, mergeOutputFormat: "mp4" }, { format: "b", mergeOutputFormat: "mp4" }]
+      : [{ format: `b${h}[ext=mp4]/b${h}/b` }]);
 
   try {
     const stdout = await runAttempts(url, common, attempts, base, Date.now() + (opts.timeoutMs || DEFAULT_TIMEOUT_MS));
