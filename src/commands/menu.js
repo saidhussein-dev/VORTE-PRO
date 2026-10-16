@@ -8,6 +8,7 @@ const botInfo = require("../utils/botInfo");
 const interactive = require("../utils/interactiveMenu");
 const identity = require("../utils/identity");
 const pollMenu = require("../utils/ownerPollMenu");
+const tapDebug = require("../utils/tapDebug");
 
 // Defaults so .setmenu2/.setmenu3 work out of the box, even before .setmenudisplay
 // or a custom .setmenu2/.setmenu3 <url> is run live on the bot.
@@ -86,14 +87,16 @@ module.exports = {
     // Every style gets the same buttons. The picture/video of styles 2-4 stays on top of the message; if the button
     // message cannot be sent, the old picture/video + full text menu is sent exactly as before.
     // Is the person asking the bot's OWN account (the owner on the paired number)? WhatsApp won't let an account press
-    // buttons on its own messages, so that one case gets link buttons instead of reply buttons (see interactiveMenu.buttons).
+    // buttons on its own messages. By default that account gets the SAME reply buttons as everyone; MENU_OWNER_LINKS=true gives it
+    // link buttons instead, MENU_OWNER_POLL=true a poll (see interactiveMenu.buttons / ownerPollMenu).
     let own = !!m.key?.fromMe;
     try {
       const me = botInfo.botNumber(sock);
       const who = String(identity.toPn(m.key?.participant || m.key?.remoteJid) || "").replace(/\D/g, "");
       if (me && who && who === me) own = true;
     } catch (e) { /* keep fromMe */ }
-    const info = { prefix, mode, plugins, linkMode: own, headerText: header }; // header = the original name box + info lines
+    tapDebug.note(`.menu requested: fromMe=${!!m.key?.fromMe} ownAccount=${own} chat=${chat.endsWith("@g.us") ? "group" : "private"}`);
+    const info = { prefix, mode, plugins, linkMode: own && /^(true|on|1|yes)$/i.test(String(process.env.MENU_OWNER_LINKS || "").trim()), headerText: header }; // header = the original name box + info lines
     // The bot's own account cannot press buttons on its own messages, so there the menu is an info message + a poll
     // (ownerPollMenu). If the poll cannot be sent, the normal path below (link buttons for that account) is used.
     const sendWithButtons = async (content) => {
