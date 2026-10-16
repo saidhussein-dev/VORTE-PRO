@@ -6,6 +6,8 @@ const { buildMenuBody } = require("../utils/menuBuilder");
 const prefixLib = require("../utils/prefix");
 const botInfo = require("../utils/botInfo");
 const interactive = require("../utils/interactiveMenu");
+const identity = require("../utils/identity");
+const pollMenu = require("../utils/ownerPollMenu");
 
 // Defaults so .setmenu2/.setmenu3 work out of the box, even before .setmenudisplay
 // or a custom .setmenu2/.setmenu3 <url> is run live on the bot.
@@ -45,7 +47,12 @@ module.exports = {
       if (await interactive.sendCategory(sock, chat, sub, prefix, context?.registry || new Map())) return;
     }
 
-    const speed = `${(Math.random() * 0.5 + 0.1).toFixed(3)}s`;
+    // ".menu all": every command in one text list (the "All Commands" button opens this)
+    const showAll = sub === "all";
+
+    // Speed = how long this message took to reach the bot (real, not random); "n/a" if WhatsApp gave no timestamp.
+    const lag = Number(m.messageTimestamp) ? Date.now() - Number(m.messageTimestamp) * 1000 : NaN;
+    const speed = Number.isFinite(lag) ? `${(Math.min(Math.max(lag, 0), 30000) / 1000).toFixed(3)}s` : "n/a";
     const usedRam = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
     const totalRam = (os.totalmem() / 1024 / 1024).toFixed(0);
 
@@ -74,11 +81,23 @@ module.exports = {
     const menuBody = buildMenuBody(prefix, context?.registry || new Map()) + `\n📢 ${config.channel.name}: ${config.channel.url}\n`;
 
     const fullText = header + menuBody;
+    if (showAll) return sock.sendMessage(chat, { text: fullText });
 
     // Every style gets the same buttons. The picture/video of styles 2-4 stays on top of the message; if the button
     // message cannot be sent, the old picture/video + full text menu is sent exactly as before.
-    const info = { prefix, mode, plugins };
-    const sendWithButtons = (content) => {
+    // Is the person asking the bot's OWN account (the owner on the paired number)? WhatsApp won't let an account press
+    // buttons on its own messages, so that one case gets link buttons instead of reply buttons (see interactiveMenu.buttons).
+    let own = !!m.key?.fromMe;
+    try {
+      const me = botInfo.botNumber(sock);
+      const who = String(identity.toPn(m.key?.participant || m.key?.remoteJid) || "").replace(/\D/g, "");
+      if (me && who && who === me) own = true;
+    } catch (e) { /* keep fromMe */ }
+    const info = { prefix, mode, plugins, linkMode: own, headerText: header }; // header = the original name box + info lines
+    // The bot's own account cannot press buttons on its own messages, so there the menu is an info message + a poll
+    // (ownerPollMenu). If the poll cannot be sent, the normal path below (link buttons for that account) is used.
+    const sendWithButtons = async (content) => {
+      if (own && await pollMenu.trySend(sock, chat, info, content)) return;
       const kind = content.video ? "video" : "image";
       return interactive.sendMainMenu(sock, chat, m, info, {
         media: { kind, source: content[kind], gifPlayback: !!content.gifPlayback },
@@ -133,6 +152,7 @@ module.exports = {
     }
 
     // Style 1 (default), or a media style with no media set yet: the same button menu, without a picture/video.
+    if (own && await pollMenu.trySend(sock, chat, info, null)) return;
     return interactive.sendMainMenu(sock, chat, m, info, style === 1 ? {} : { legacy: () => sock.sendMessage(chat, { text: fullText }) });
   }
 };

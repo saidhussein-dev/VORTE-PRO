@@ -9,7 +9,7 @@ const { panel } = require("../utils/ui");
 module.exports = {
   name: "tiktok",
   scope: "BOTH",
-  description: "Download a TikTok video. Usage: .tiktok <link>",
+  description: "Download a TikTok video in the best quality, without the watermark. Usage: .tiktok <link>",
   async execute(sock, m, args) {
     const chat = m.key.remoteJid;
     const query = args.join(" ").trim();
@@ -22,8 +22,8 @@ module.exports = {
     await runDownload(sock, m, {
       title: "🎵 TIKTOK DOWNLOAD",
       intro: ["📥 Fetching media...", "🎬 Processing video..."],
-      fetch: () => downloaders.downloadVideoFromUrl(detected.url),
-      message: (r) => ({ video: readFile(r.filePath), caption: `🎵 ${r.title}`, ...(r.format && r.format !== "mp4" ? { mimetype: videoMime(r.format) } : {}) }),
+      fetch: () => downloaders.downloadVideoFromUrl(detected.url, { platform: "tiktok" }), // highest quality, no watermark
+      message: (r) => ({ video: readFile(r.filePath), caption: `🎵 ${r.title}${r.height ? ` • ${r.height}p` : ""}${r.formatId === "download" ? "\n⚠️ TikTok only offered the watermarked copy of this video." : ""}`, ...(r.format && r.format !== "mp4" ? { mimetype: videoMime(r.format) } : {}) }),
       failText: "Couldn't download that TikTok."
     });
   }
