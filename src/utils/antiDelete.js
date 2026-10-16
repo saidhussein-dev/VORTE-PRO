@@ -19,17 +19,27 @@ const messageCache = require("./messageCache");
 const botActivity = require("./botActivity");
 const identity = require("./identity");
 const automation = require("./automation");
+const { pipeline } = require("stream/promises");
 
 const CACHE_DIR = path.join(__dirname, "../../storage/tmp/antidelete");
-const TTL_MS = (Number(process.env.ANTIDELETE_CACHE_MINUTES) || 60) * 60 * 1000;
-const MAX_FILE_BYTES = (Number(process.env.ANTIDELETE_MAX_MEDIA_MB) || 10) * 1024 * 1024;
-const MAX_TOTAL_BYTES = (Number(process.env.ANTIDELETE_MAX_TOTAL_MB) || 200) * 1024 * 1024;
+// How long a recoverable file is kept. Default 24 hours (ANTIDELETE_CACHE_MINUTES to change).
+const TTL_MS = (Number(process.env.ANTIDELETE_CACHE_MINUTES) || 24 * 60) * 60 * 1000;
+// NO per-file size limit by default: every size is kept. (ANTIDELETE_MAX_MEDIA_MB=<n> adds one, if the host disk is tiny.)
+const MAX_FILE_BYTES = Number(process.env.ANTIDELETE_MAX_MEDIA_MB) > 0 ? Number(process.env.ANTIDELETE_MAX_MEDIA_MB) * 1024 * 1024 : Infinity;
+// The cache lives on DISK. Past this total the OLDEST files go first — never the one just saved. 0 = no cap.
+const MAX_TOTAL_BYTES = process.env.ANTIDELETE_MAX_TOTAL_MB === "0" ? Infinity : (Number(process.env.ANTIDELETE_MAX_TOTAL_MB) || 2048) * 1024 * 1024;
+// Files up to this size are sent from memory; bigger ones are streamed from disk so a huge video never fills RAM.
+const SEND_FROM_MEMORY_UP_TO = 40 * 1024 * 1024;
+// If the owner deletes... no: if the SENDER deletes a message while its media is still downloading, wait this long for it.
+const DOWNLOAD_WAIT_MS = 5 * 60 * 1000;
 
 const MEDIA_KEYS = { imageMessage: "image", videoMessage: "video", audioMessage: "audio", documentMessage: "document", stickerMessage: "sticker" };
 const WRAPPERS = ["ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "viewOnceMessageV2Extension", "documentWithCaptionMessage", "editedMessage"];
 
 const media = new Map(); // message id -> { file, kind, mimetype, fileName, caption, ptt, gif, bytes, cachedAt }
 let totalBytes = 0;
+const pending = new Map(); // message id -> promise of its media download (so a quick delete waits for it)
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Peel ephemeral / view-once / caption wrappers. @returns {{message:object, viewOnce:boolean}} */
 function unwrap(message) {
@@ -59,12 +69,15 @@ function describeContent(message) {
 
 const enabled = (settings) => !!settings?.global?.antidelete?.enabled;
 
-function sweep() {
+function sweep(keepId) {
   const now = Date.now();
   for (const [id, e] of media) {
-    if (now - e.cachedAt > TTL_MS) drop(id);
+    if (id !== keepId && now - e.cachedAt > TTL_MS) drop(id);
   }
-  while (totalBytes > MAX_TOTAL_BYTES && media.size) drop(media.keys().next().value);
+  for (const id of [...media.keys()]) {
+    if (totalBytes <= MAX_TOTAL_BYTES) break;
+    if (id !== keepId) drop(id); // oldest first; the file just saved is never the one thrown away
+  }
 }
 function drop(id) {
   const e = media.get(id);
@@ -97,26 +110,52 @@ async function remember(sock, m, settings, { download = defaultDownload } = {}) 
   if (!enabled(settings) || !MEDIA_KEYS_SET.has(c.kind) || c.viewOnce) return;
   if (!automation.chatKind(m.key.remoteJid)) return;
   const declared = Number(c.node?.fileLength) || 0;
-  if (declared && declared > MAX_FILE_BYTES) return;
+  if (declared && declared > MAX_FILE_BYTES) return; // only when the owner set ANTIDELETE_MAX_MEDIA_MB
 
-  try {
-    const buf = await download(sock, m);
-    if (!buf || !buf.length || buf.length > MAX_FILE_BYTES) return;
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const file = path.join(CACHE_DIR, id.replace(/[^A-Za-z0-9_-]/g, "_"));
-    fs.writeFileSync(file, buf);
-    media.set(id, { file, kind: c.kind, mimetype: c.node?.mimetype, fileName: c.node?.fileName, caption: c.caption, ptt: !!c.node?.ptt, gif: !!c.node?.gifPlayback, bytes: buf.length, cachedAt: Date.now() });
-    totalBytes += buf.length;
-    sweep();
-  } catch (e) {
-    console.error("⚠️ antidelete: couldn't save media:", e.message);
+  // Registered BEFORE the first await, so a delete that arrives while the file is still downloading waits for it.
+  const job = saveMedia(sock, m, id, c, download);
+  pending.set(id, job);
+  try { await job; } finally { if (pending.get(id) === job) pending.delete(id); }
+}
+
+/** Download one message's media to disk (stream, so any size), with one retry. Never throws. */
+async function saveMedia(sock, m, id, c, download) {
+  const file = path.join(CACHE_DIR, id.replace(/[^A-Za-z0-9_-]/g, "_"));
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      const data = await download(sock, m);
+      if (!data) throw new Error("the download returned nothing");
+      if (Buffer.isBuffer(data) || data instanceof Uint8Array) fs.writeFileSync(file, data);
+      else await pipeline(data, fs.createWriteStream(file));
+      const bytes = fs.statSync(file).size;
+      if (!bytes) throw new Error("the downloaded file is empty");
+      if (bytes > MAX_FILE_BYTES) { fs.rmSync(file, { force: true }); return; }
+      media.set(id, { file, kind: c.kind, mimetype: c.node?.mimetype, fileName: c.node?.fileName, caption: c.caption, ptt: !!c.node?.ptt, gif: !!c.node?.gifPlayback, bytes, cachedAt: Date.now() });
+      totalBytes += bytes;
+      sweep(id);
+      return;
+    } catch (e) {
+      fs.rmSync(file, { force: true });
+      if (attempt === 2) console.error("⚠️ antidelete: couldn't save media:", e.message);
+      else await sleepMs(1500);
+    }
   }
+}
+
+/** Wait (up to DOWNLOAD_WAIT_MS) for a media download that is still running for this message. */
+async function waitForSave(id) {
+  const job = pending.get(id);
+  if (!job) return;
+  let timer;
+  await Promise.race([job, new Promise((resolve) => { timer = setTimeout(resolve, DOWNLOAD_WAIT_MS); if (timer.unref) timer.unref(); })]);
+  clearTimeout(timer);
 }
 const MEDIA_KEYS_SET = new Set(Object.values(MEDIA_KEYS));
 
 async function defaultDownload(sock, m) {
   const { downloadMediaMessage } = require("baileys");
-  return downloadMediaMessage(m, "buffer", {}, { reuploadRequest: sock.updateMediaMessage });
+  return downloadMediaMessage(m, "stream", {}, { reuploadRequest: sock.updateMediaMessage }); // a stream: written to disk, never held in memory
 }
 
 /** Single place that decides whether a revoke event is reported. @returns {string|null} reason to ignore */
@@ -151,6 +190,29 @@ function formatSender(jid) {
   return pn ? `+${pn}` : `@${String(jid || "").split("@")[0].split(":")[0]} (number hidden by WhatsApp)`;
 }
 
+const EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "video/mp4": ".mp4", "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "application/pdf": ".pdf" };
+
+/** Send one recovered file. If WhatsApp refuses it as an image/video/audio (size, format), it goes as a document instead. */
+async function deliverMedia(sock, owner, saved, data, header, caption) {
+  const asDocument = () => sock.sendMessage(owner, {
+    document: data,
+    mimetype: saved.mimetype || "application/octet-stream",
+    fileName: saved.fileName || `deleted-${saved.kind}${EXT[String(saved.mimetype || "").split(";")[0].trim()] || ""}`,
+    caption
+  });
+  try {
+    if (saved.kind === "image") await sock.sendMessage(owner, { image: data, caption });
+    else if (saved.kind === "video") await sock.sendMessage(owner, { video: data, caption, gifPlayback: saved.gif });
+    else if (saved.kind === "document") await asDocument();
+    else if (saved.kind === "audio") { await sock.sendMessage(owner, { text: `${header}\n\n📩 Deleted voice/audio message ⬇️` }); await sock.sendMessage(owner, { audio: data, mimetype: saved.mimetype || "audio/ogg; codecs=opus", ptt: saved.ptt }); }
+    else if (saved.kind === "sticker") { await sock.sendMessage(owner, { text: `${header}\n\n📩 Deleted sticker ⬇️` }); await sock.sendMessage(owner, { sticker: data }); }
+  } catch (e) {
+    if (!["image", "video", "audio"].includes(saved.kind)) throw e;
+    console.error(`⚠️ antidelete: sending it as a ${saved.kind} failed (${e.message}); sending it as a file instead`);
+    await asDocument();
+  }
+}
+
 /**
  * A message was deleted for everyone.
  * @returns {Promise<{sent:boolean, reason?:string}>}
@@ -158,6 +220,7 @@ function formatSender(jid) {
 async function handleDelete(sock, update, settings) {
   const key = update.key;
   if (!enabled(settings)) return { sent: false, reason: "disabled" };
+  await waitForSave(key.id); // a big file may still be downloading when the sender deletes it
   const cached = messageCache.get(key.id);
   const why = ignoreReason(key, cached);
   if (why) { if (why !== "not a normal chat (status/broadcast/newsletter)") console.log(`🗑️ antidelete: not reported (${why})`); return { sent: false, reason: why }; }
@@ -184,13 +247,10 @@ async function handleDelete(sock, update, settings) {
   for (const owner of owners) {
     try {
       if (saved && fs.existsSync(saved.file)) {
-        const buffer = fs.readFileSync(saved.file);
+        const data = saved.bytes <= SEND_FROM_MEMORY_UP_TO ? fs.readFileSync(saved.file) : { url: saved.file };
         const caption = `${header}\n\n📩 Deleted message:${saved.caption ? `\n${saved.caption}` : ""}`.slice(0, 1000);
-        if (saved.kind === "image") await sock.sendMessage(owner, { image: buffer, caption });
-        else if (saved.kind === "video") await sock.sendMessage(owner, { video: buffer, caption, gifPlayback: saved.gif });
-        else if (saved.kind === "document") await sock.sendMessage(owner, { document: buffer, mimetype: saved.mimetype || "application/octet-stream", fileName: saved.fileName || "deleted-file", caption });
-        else if (saved.kind === "audio") { await sock.sendMessage(owner, { text: `${header}\n\n📩 Deleted voice/audio message ⬇️` }); await sock.sendMessage(owner, { audio: buffer, mimetype: saved.mimetype || "audio/ogg; codecs=opus", ptt: saved.ptt }); }
-        else if (saved.kind === "sticker") { await sock.sendMessage(owner, { text: `${header}\n\n📩 Deleted sticker ⬇️` }); await sock.sendMessage(owner, { sticker: buffer }); }
+        await deliverMedia(sock, owner, saved, data, header, caption);
+        if (saved.caption && saved.caption.length > 700) await sock.sendMessage(owner, { text: `Full caption of the deleted ${saved.kind}:\n${saved.caption}` });
       } else {
         const body = cached.text
           ? `📩 Deleted message:\n${cached.text}`
@@ -209,4 +269,4 @@ async function handleDelete(sock, update, settings) {
   return { sent: delivered, reason: delivered ? undefined : "delivery failed" };
 }
 
-module.exports = { remember, handleDelete, ignoreReason, describeContent, unwrap, enabled, formatTime, _media: media, CACHE_DIR };
+module.exports = { remember, handleDelete, waitForSave, ignoreReason, describeContent, unwrap, enabled, formatTime, _media: media, CACHE_DIR };
