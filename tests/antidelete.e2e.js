@@ -76,14 +76,96 @@ const settle = () => sleep(30);
   check("sticker: header text, then the sticker", toOwner(s).length === 2 && Buffer.isBuffer(toOwner(s)[1].content.sticker));
   check("cached file removed after it was delivered", ![...antiDelete._media.values()].some((e) => !fs.existsSync(e.file)) && !antiDelete._media.has("MED-STK"));
 
-  section("media that can't be recovered says so honestly");
+  section("media of ANY size is recovered (no size limit)");
   s = makeSock(); st = on();
   const big = mediaMsg(3, "imageMessage", { mimetype: "image/png", fileLength: 99 * 1024 * 1024 }, "MED-BIG");
   let downloaded = false;
   await antiDelete.remember(s, big, st.getSettings(), { download: async () => { downloaded = true; return PNG; } });
   s.sent.length = 0; await handleMessageUpdate(s, revoke(big), st.getSettings);
-  check("oversized file is never downloaded", downloaded === false);
-  check("owner is told it couldn't be recovered (no fake content)", /Deleted image — it was too large|can't recover the file/.test(toOwner(s)[0]?.content.text || ""), toOwner(s)[0]?.content);
+  check("a file declared as 99 MB is downloaded", downloaded === true);
+  check("…and delivered to the owner", toOwner(s).length === 1 && !!toOwner(s)[0].content.image, toOwner(s).map((x) => Object.keys(x.content)));
+
+  section("big files are streamed (a Readable), written to disk, and sent from disk");
+  {
+    const { Readable } = require("stream");
+    const big2 = Buffer.alloc(45 * 1024 * 1024, 7); // above the send-from-memory threshold
+    s = makeSock(); st = on();
+    const mv = mediaMsg(3, "videoMessage", { mimetype: "video/mp4", fileLength: big2.length, caption: "long video" }, "MED-STREAM");
+    await antiDelete.remember(s, mv, st.getSettings(), { download: async () => Readable.from([big2.subarray(0, 20e6), big2.subarray(20e6)]) });
+    const saved = antiDelete._media.get("MED-STREAM");
+    check("the whole file reached the disk cache", !!saved && fs.statSync(saved.file).size === big2.length, saved && saved.bytes);
+    s.sent.length = 0; await handleMessageUpdate(s, revoke(mv), st.getSettings);
+    const v = toOwner(s)[0]?.content;
+    check("a 45 MB video is sent as a file path stream, not loaded into memory", !!v && v.video && typeof v.video.url === "string" && v.video.url.includes("antidelete"), v && Object.keys(v));
+    check("it is still a video message with its caption", /long video/.test(v?.caption || ""));
+  }
+
+  section("the sender deletes WHILE the file is still downloading -> the file still arrives");
+  {
+    s = makeSock(); st = on();
+    const slow = mediaMsg(3, "imageMessage", { mimetype: "image/png", fileLength: 9 }, "MED-SLOW");
+    const p = antiDelete.remember(s, slow, st.getSettings(), { download: async () => { await sleep(300); return PNG; } });
+    await sleep(20); // the download is under way; the delete arrives now
+    s.sent.length = 0;
+    await handleMessageUpdate(s, revoke(slow), st.getSettings);
+    await p;
+    check("delivered as an image, not as a 'can't recover' notice", toOwner(s).length === 1 && !!toOwner(s)[0].content.image, toOwner(s).map((x) => Object.keys(x.content)));
+  }
+
+  section("a failed download is retried once");
+  {
+    s = makeSock(); st = on();
+    const flaky = mediaMsg(3, "imageMessage", { mimetype: "image/png", fileLength: 9 }, "MED-FLAKY");
+    let tries = 0;
+    await antiDelete.remember(s, flaky, st.getSettings(), { download: async () => { if (++tries === 1) throw new Error("network blip"); return PNG; } });
+    check("second attempt saved it", tries === 2 && antiDelete._media.has("MED-FLAKY"), tries);
+    s.sent.length = 0; await handleMessageUpdate(s, revoke(flaky), st.getSettings);
+    check("and it is delivered", !!toOwner(s)[0]?.content.image);
+  }
+
+  section("if WhatsApp refuses it as a video, it is sent as a document instead");
+  {
+    s = makeSock(); st = on();
+    const mv2 = mediaMsg(3, "videoMessage", { mimetype: "video/mp4", fileLength: 9, caption: "clip" }, "MED-DOCFB");
+    await antiDelete.remember(s, mv2, st.getSettings(), { download: async () => Buffer.from("videodata") });
+    const orig = s.sendMessage; let failedOnce = false;
+    s.sendMessage = async (jid, content, opts) => { if (content.video && !failedOnce) { failedOnce = true; throw new Error("too large for a video"); } return orig(jid, content, opts); };
+    s.sent.length = 0; await handleMessageUpdate(s, revoke(mv2), st.getSettings);
+    const d = toOwner(s).find((x) => x.content.document);
+    check("delivered as a document with the video mimetype", !!d && d.content.mimetype === "video/mp4" && /deleted-video\.mp4/.test(d.content.fileName), toOwner(s).map((x) => Object.keys(x.content)));
+  }
+
+  section("the total cache cap drops the OLDEST files, never the newest");
+  {
+    // separate process: the cap is read when the module loads (here 1 MB; three 600 KB files are saved one after another)
+    const { execFileSync } = require("child_process");
+    const code = `
+      const ad = require("./src/utils/antiDelete");
+      const st = { global: { antidelete: { enabled: true } } };
+      (async () => {
+        for (const id of ["CAP-A", "CAP-B", "CAP-C"]) {
+          const m = { key: { remoteJid: "255700000555@s.whatsapp.net", id, fromMe: false }, message: { imageMessage: { mimetype: "image/png", fileLength: 600000 } }, messageTimestamp: Math.floor(Date.now() / 1000) };
+          await ad.remember({}, m, st, { download: async () => Buffer.alloc(600000, 1) });
+        }
+        console.log("SURVIVORS=" + [...ad._media.keys()].join(","));
+        process.exit(0);
+      })();`;
+    const out = execFileSync(process.execPath, ["-e", code], { cwd: require("path").join(__dirname, ".."), env: { ...process.env, ANTIDELETE_MAX_TOTAL_MB: "1" }, encoding: "utf8" });
+    const survivors = (out.match(/SURVIVORS=(.*)/) || [])[1];
+    check("only the newest file is kept when the cap is exceeded", survivors === "CAP-C", out.trim());
+  }
+
+  section("a long caption is not cut off");
+  {
+    s = makeSock(); st = on();
+    const longCap = "L".repeat(1500);
+    const mc = mediaMsg(3, "imageMessage", { mimetype: "image/png", fileLength: 9, caption: longCap }, "MED-LONGCAP");
+    await antiDelete.remember(s, mc, st.getSettings(), { download: async () => PNG });
+    s.sent.length = 0; await handleMessageUpdate(s, revoke(mc), st.getSettings);
+    const full = toOwner(s).find((x) => x.content.text && x.content.text.includes(longCap));
+    check("the full caption follows as text", !!full, toOwner(s).map((x) => Object.keys(x.content)));
+  }
+
   s = makeSock(); st = on();
   const vo = { ...groupMsg(3, "", { id: "VO1" }), message: { viewOnceMessageV2: { message: { imageMessage: { viewOnce: true, mimetype: "image/png", fileLength: 9 } } } } };
   downloaded = false;
@@ -145,10 +227,10 @@ const settle = () => sleep(30);
   s = makeSock(); st = on();
   const old = mediaMsg(3, "imageMessage", { mimetype: "image/png", fileLength: PNG.length }, "OLD1");
   await antiDelete.remember(s, old, st.getSettings(), { download: async () => PNG });
-  const file = antiDelete._media.get("OLD1").file; antiDelete._media.get("OLD1").cachedAt = Date.now() - 3 * 3600 * 1000;
+  const file = antiDelete._media.get("OLD1").file; antiDelete._media.get("OLD1").cachedAt = Date.now() - 30 * 3600 * 1000;
   const fresh = mediaMsg(3, "imageMessage", { mimetype: "image/png", fileLength: PNG.length }, "NEW1");
   await antiDelete.remember(s, fresh, st.getSettings(), { download: async () => PNG });
-  check("the bot's own temporary copy expires (default 60 min) and the file is removed", !antiDelete._media.has("OLD1") && antiDelete._media.has("NEW1"));
+  check("the bot's own temporary copy expires (default 24 h) and the file is removed", !antiDelete._media.has("OLD1") && antiDelete._media.has("NEW1"));
   await sleep(50);
   check("expired file removed from disk", !fs.existsSync(file));
 

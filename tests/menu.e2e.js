@@ -26,7 +26,7 @@ const { CATEGORIES, buildMenuBody } = require("../src/utils/menuBuilder");
   const aliasDup = shownAliases.filter((a, i) => shownAliases.indexOf(a) !== i);
   check("no alias shown twice", aliasDup.length === 0, aliasDup.join(", "));
   const sameImpl = new Map();
-  for (const e of entries) { const c = registry.get(e.c); if (c.name !== "setting" && !["fun", "tools", "imageai", "hangman", "quiz", "setmenu"].includes(c.name)) { if (sameImpl.has(c)) sameImpl.get(c).push(e.c); else sameImpl.set(c, [e.c]); } }
+  for (const e of entries) { const c = registry.get(e.c); if (c.name !== "setting" && !["fun", "tools", "extras", "imageai", "hangman", "quiz", "setmenu"].includes(c.name)) { if (sameImpl.has(c)) sameImpl.get(c).push(e.c); else sameImpl.set(c, [e.c]); } }
   const dupImpl = [...sameImpl.values()].filter((v) => v.length > 1);
   check("two entries never point at one implementation (except intentional multi-feature files)", dupImpl.length === 0, JSON.stringify(dupImpl));
 
@@ -37,7 +37,7 @@ const { CATEGORIES, buildMenuBody } = require("../src/utils/menuBuilder");
 
   section("one working name per command");
   // Commands that are NOT synonyms: one file serving several distinct commands, or names that change what the command does.
-  const DISTINCT = new Set(["setting", "fun", "tools", "imageai", "hangman", "quiz", "setmenu1", "blacklist", "requests", "antibot", "gpt", "randommovie"]);
+  const DISTINCT = new Set(["setting", "fun", "tools", "extras", "imageai", "hangman", "quiz", "setmenu1", "blacklist", "requests", "antibot", "gpt", "randommovie"]);
   const withAliases = [...new Set(registry.values())].filter((c) => (c.aliases || []).length && !DISTINCT.has(c.name)).map((c) => `${c.name}: ${c.aliases.join(",")}`);
   check("no command keeps a duplicate name (only distinct-behaviour names remain)", withAliases.length === 0, withAliases.join(" | "));
   const removed = ["tt", "ig", "s", "link", "del", "resetlink", "ttt", "youtube", "video", "tr", "ddg", "setonline", "id", "uptime", "short", "privacy", "admins", "ai", "ask", "imagine", "groupinfo", "wikipedia", "updatebio", "description", "setgdesc", "everyone", "dictionary", "ytdebug", "dlcheck", "updategname", "play", "music", "wouldyourather", "creategroup", "movie", "tmdb", "help", "eval", "botname", "setname", "groupstatus", "gstatus", "tostatusgroup"];

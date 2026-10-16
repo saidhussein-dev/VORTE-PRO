@@ -26,9 +26,10 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
   let s = makeSock(); let st = makeStore();
   await handler.handle(s, privateMsg(".menu"), ".menu", st.getSettings, st.saveSettings);
   check("one interactive message is sent", sentInteractive.length === 1, sentInteractive.length);
-  const msg = sentInteractive[0]?.content?.viewOnceMessage?.message?.interactiveMessage;
-  check("title is exactly VORTE PRO, alone", msg?.header?.title === "VORTE PRO" && !msg?.header?.subtitle, msg?.header);
-  check("body has the info lines and nothing branded around the name", /Prefix  : \./.test(msg?.body?.text) && /Plugins : \d+/.test(msg?.body?.text) && !/VORTE/.test(msg?.body?.text), msg?.body?.text);
+  const msg = (sentInteractive[0]?.content?.interactiveMessage || sentInteractive[0]?.content?.viewOnceMessage?.message?.interactiveMessage);
+  const HEADER_LINES = ["Owner   :", "Owner no:", "Bot no. :", "Prefix  :", "Version :", "Mode    :", "Plugins :", "Speed   :", "Usage   :", "Ram     :"];
+  check("the ORIGINAL header box with the bot name opens the body (no separate title)", !msg?.header && /^╔═+╗\n║\s+🤖 VORTE PRO\s+║\n╚═+╝/.test(msg?.body?.text), msg?.body?.text?.slice(0, 80));
+  check("body has every original info line (Owner ... Ram)", HEADER_LINES.every((l) => (msg?.body?.text || "").includes(l)) && /Plugins : \d+/.test(msg?.body?.text), msg?.body?.text);
   const btns = msg?.nativeFlowMessage?.buttons || [];
   const parsed = btns.map((b) => ({ name: b.name, ...JSON.parse(b.buttonParamsJson) }));
   const label = (b) => b.display_text || b.title;
@@ -36,15 +37,17 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
   const chan = parsed.find((b) => b.display_text === "WhatsApp Channel"), gh = parsed.find((b) => b.display_text === "GitHub Repository");
   check("Channel button opens the configured channel URL", chan?.name === "cta_url" && chan.url === "https://whatsapp.com/channel/0029VbBqa4HHbFVBar2vwO3H" && chan.url === config.channel.url, chan);
   check("GitHub button opens the repository", gh?.name === "cta_url" && gh.url === "https://github.com/saidhussein-dev/VORTE-PRO", gh);
-  check("NO emoji anywhere in the message (title, body, footer, buttons)", !EMOJI.test(JSON.stringify(sentInteractive[0]?.content)), JSON.stringify(sentInteractive[0]?.content).match(EMOJI));
-  check("no image or video attached to the menu", msg?.header?.hasMediaAttachment === false);
+  check("no emoji in the footer or any button (only the original header box has its robot)", !EMOJI.test(JSON.stringify([msg?.nativeFlowMessage, msg?.footer])), JSON.stringify([msg?.nativeFlowMessage, msg?.footer]).match(EMOJI));
+  check("no image or video attached to the menu", !msg?.header?.hasMediaAttachment);
   check("sends nothing else when the buttons were delivered", s.sent.length === 0, allTexts(s));
 
-  section("every button id reaches a real handler (through the real message handler)");
+  section("every button reaches a real handler (through the real message handler)");
   const ids = parsed.filter((b) => b.name === "quick_reply").map((b) => b.id);
   const rows = parsed.filter((b) => b.name === "single_select").flatMap((b) => b.sections.flatMap((x) => x.rows.map((r) => r.id)));
+  check("two link buttons, four reply buttons and one list", parsed.filter((b) => b.name === "cta_url").length === 2 && ids.length === 4 && parsed.filter((b) => b.name === "single_select").length === 1, parsed.map((b) => b.name));
   check("button ids are all ours and unique", [...ids, ...rows].every((i) => i.startsWith(im.ID_PREFIX)) && new Set([...ids, ...rows]).size === ids.length + rows.length, [...ids, ...rows]);
   check("the list covers the other categories", rows.length === im.GROUPS.filter((g) => !g.direct).length && rows.length >= 8, rows);
+  check("the body says to select a category (no 'press send' for reply buttons)", /Select a category/.test(msg?.body?.text) && !/press send/.test(msg?.body?.text), msg?.body?.text);
   for (const id of ids.filter((i) => i !== im.ID_PREFIX + "contact")) {
     s = makeSock(); await feed(s, tap(id), makeStore());
     const t = allTexts(s).join("\n");
@@ -96,15 +99,15 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
   s = makeSock(); await handler.handle(s, privateMsg(".menu"), ".menu", st.getSettings, st.saveSettings);
   console.error = quiet;
   t = allTexts(s).join("\n");
-  check("a plain text menu is sent instead (never silent)", /^VORTE PRO\n/.test(t) && /Plugins : \d+/.test(t) && /\.menu download/.test(t), t.slice(0, 120));
-  check("the fallback also has no emoji and keeps the links", !EMOJI.test(t) && t.includes(config.channel.url) && t.includes("github.com/saidhussein-dev/VORTE-PRO"), t);
+  check("a plain text menu is sent instead (never silent)", /VORTE PRO/.test(t) && HEADER_LINES.every((l) => t.includes(l)) && /\.menu download/.test(t), t.slice(0, 120));
+  check("the fallback also has no emoji and keeps the links", !EMOJI.test(t.replace("🤖", "")) && t.includes(config.channel.url) && t.includes("github.com/saidhussein-dev/VORTE-PRO"), t);
   im.deps.relayInteractive = before;
 
   section("styles 2, 3 and 4 (picture / video menus) get the SAME buttons, with the media kept on top");
   const prepared = [];
   im.deps.prepareMedia = async (sock, media) => { prepared.push(media); return media.kind === "video" ? { videoMessage: { url: "u", mimetype: "video/mp4", gifPlayback: !!media.gifPlayback } } : { imageMessage: { url: "u", mimetype: "image/jpeg" } }; };
   const withUpload = () => { const x = makeSock(); x.waUploadToServer = async () => ({}); return x; };
-  const buttonsOf = (c) => (c?.viewOnceMessage?.message?.interactiveMessage?.nativeFlowMessage?.buttons || []).map((b) => JSON.parse(b.buttonParamsJson).display_text || JSON.parse(b.buttonParamsJson).title);
+  const buttonsOf = (c) => ((c?.interactiveMessage || c?.viewOnceMessage?.message?.interactiveMessage)?.nativeFlowMessage?.buttons || []).map((b) => JSON.parse(b.buttonParamsJson).display_text || JSON.parse(b.buttonParamsJson).title);
   const MAIN = JSON.stringify(["WhatsApp Channel", "GitHub Repository", "Contact Owner", "Download Commands", "Group Commands", "Owner Commands", "More Categories"]);
   const cases = [
     ["style 2 (picture, default URL)", { style: 2 }, "image", "imageMessage"],
@@ -116,10 +119,10 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
     const nBefore = sentInteractive.length;
     s = withUpload(); const stx = makeStore({ global: { menu } });
     await handler.handle(s, privateMsg(".menu"), ".menu", stx.getSettings, stx.saveSettings);
-    const c = sentInteractive[nBefore]?.content; const im2 = c?.viewOnceMessage?.message?.interactiveMessage;
+    const c = sentInteractive[nBefore]?.content; const im2 = c?.interactiveMessage || c?.viewOnceMessage?.message?.interactiveMessage;
     check(`${name}: one button message with the ${kind} in the header`, sentInteractive.length === nBefore + 1 && im2?.header?.hasMediaAttachment === true && !!im2.header[field], im2?.header);
     check(`${name}: same seven buttons as the default menu`, JSON.stringify(buttonsOf(c)) === MAIN, buttonsOf(c));
-    check(`${name}: VORTE PRO stands alone as the first line, no emoji`, /^VORTE PRO\n\n/.test(im2?.body?.text) && !EMOJI.test(JSON.stringify(c)), im2?.body?.text);
+    check(`${name}: the original header box opens the body, no emoji in footer/buttons`, /^╔═+╗\n║\s+🤖 VORTE PRO\s+║/.test(im2?.body?.text) && HEADER_LINES.every((l) => im2.body.text.includes(l)) && !EMOJI.test(JSON.stringify([im2.nativeFlowMessage, im2.footer])), im2?.body?.text);
     check(`${name}: nothing else is sent when the buttons went out`, s.sent.length === 0, allTexts(s));
   }
   check("the saved media (not a stand-in) is what gets uploaded", prepared[0]?.source?.url && prepared[2]?.source?.url === "https://example.com/x.jpg" && prepared[3]?.kind === "video" && prepared[1]?.gifPlayback === true, prepared.map((x) => [x.kind, x.source?.url]));
@@ -141,7 +144,7 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
   s = withUpload(); const st4 = makeStore({ global: { menu: { style: 4 } } }); // style 4 chosen but no media set yet
   const n4 = sentInteractive.length;
   await handler.handle(s, privateMsg(".menu"), ".menu", st4.getSettings, st4.saveSettings);
-  check("style 4 with no media set -> still the button menu (no picture)", sentInteractive.length === n4 + 1 && sentInteractive[n4].content.viewOnceMessage.message.interactiveMessage.header.title === "VORTE PRO");
+  check("style 4 with no media set -> still the button menu (no picture)", sentInteractive.length === n4 + 1 && (sentInteractive[n4].content.interactiveMessage || sentInteractive[n4].content.viewOnceMessage.message.interactiveMessage).nativeFlowMessage.buttons.length === 7 && !(sentInteractive[n4].content.interactiveMessage || sentInteractive[n4].content.viewOnceMessage.message.interactiveMessage).header?.hasMediaAttachment);
 
   done();
 })().catch((e) => { console.error(e); process.exit(1); });
