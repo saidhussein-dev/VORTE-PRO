@@ -10,6 +10,7 @@ const antiActions = require("../../utils/antiActions");
 const prefixLib = require("../../utils/prefix");
 const interactiveMenu = require("../../utils/interactiveMenu");
 const pollMenu = require("../../utils/ownerPollMenu");
+const tapDebug = require("../../utils/tapDebug");
 
 const lastCommand = {};
 const recentMessages = {}; // for antispam flood detection
@@ -31,8 +32,18 @@ function senderNumbers(sender) {
  * Baileys may deliver several messages in ONE upsert (e.g. after a reconnect).
  * Every one of them is processed; one failing must not stop the rest.
  */
+const FRESH_REPLY_MS = 60 * 1000;
+
 async function handleMessage(sock, upsert, getSettings, saveSettings) {
-  if (upsert.type !== "notify") return;
+  tapDebug.recordUpsert(upsert); // only does anything while the owner has switched on .debugtaps
+  if (upsert.type !== "notify") {
+    // WhatsApp labels some deliveries "append" (history, and sometimes the account's own actions). Those are normally
+    // old messages and stay ignored. But a button/list tap or poll vote that is only seconds old is somebody tapping
+    // right now, so it is accepted whatever the label says. (Our own ids are still checked afterwards.)
+    const fresh = (upsert.messages || []).filter((m) => interactiveMenu.isMenuReply(m.message) && Date.now() - (Number(m.messageTimestamp) * 1000 || 0) < FRESH_REPLY_MS);
+    if (!fresh.length) return;
+    upsert = { ...upsert, messages: fresh };
+  }
   for (const m of upsert.messages || []) {
     try {
       await processMessage(sock, m, getSettings, saveSettings);
@@ -93,6 +104,7 @@ async function processMessage(sock, m, getSettings, saveSettings) {
     "";
 
   const body = (msgText || "").trim();
+  if (body && interactiveMenu.isMenuReply(m.message)) tapDebug.note(`a menu reply became the command "${body}" (fromMe=${!!m.key.fromMe})`);
 
   // A button/list tap that is not one of ours (or that we could not read): say so in the console, with what
   // WhatsApp actually sent, instead of ignoring it silently.
