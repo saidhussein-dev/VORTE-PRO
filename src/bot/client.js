@@ -18,6 +18,22 @@ const identity = require("../utils/identity");
 
 const QR_ENABLED = process.env.ENABLE_QR === "true";
 let reconnectAttempts = 0;
+let reconnectTimer = null;
+
+/** One reconnect at a time, with a catch: a failed attempt schedules the next one instead of crashing the process. */
+function scheduleReconnect(pairingState, handlers, delay) {
+  if (reconnectTimer) return; // one is already pending
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    try {
+      await startBot(pairingState, handlers);
+    } catch (e) {
+      console.error("❌ Reconnect failed:", e.message);
+      reconnectAttempts++;
+      scheduleReconnect(pairingState, handlers, Math.min(5000 * 2 ** reconnectAttempts, 60000));
+    }
+  }, delay + Math.random() * 1000);
+}
 
 // Suppress annoying libsignal Bad MAC errors during initial sync
 const originalConsoleError = console.error;
@@ -92,19 +108,19 @@ async function startBot(pairingState, handlers = {}) {
   // Immediately register handlers to avoid missing initial events
   if (handlers.onMessage) {
     sock.ev.on("messages.upsert", (upsert) => {
-      handlers.onMessage(sock, upsert);
+      Promise.resolve(handlers.onMessage(sock, upsert)).catch((e) => console.error("❌ message handler error:", e));
     });
   }
   if (handlers.onGroupUpdate) {
-    sock.ev.on("group-participants.update", (update) => handlers.onGroupUpdate(sock, update));
+    sock.ev.on("group-participants.update", (update) => Promise.resolve(handlers.onGroupUpdate(sock, update)).catch((e) => console.error("❌ group update error:", e)));
   }
 
   if (handlers.onMessageUpdate) {
-    sock.ev.on("messages.update", (updates) => handlers.onMessageUpdate(sock, updates));
+    sock.ev.on("messages.update", (updates) => Promise.resolve(handlers.onMessageUpdate(sock, updates)).catch((e) => console.error("❌ message update error:", e)));
   }
 
   if (handlers.onCall) {
-    sock.ev.on("call", (calls) => handlers.onCall(sock, calls));
+    sock.ev.on("call", (calls) => Promise.resolve(handlers.onCall(sock, calls)).catch((e) => console.error("❌ call handler error:", e)));
   }
 
   // Connection handling
@@ -147,7 +163,9 @@ async function startBot(pairingState, handlers = {}) {
       const delay = code === DisconnectReason.restartRequired ? 1000 : Math.min(5000 * 2 ** reconnectAttempts, 60000);
       reconnectAttempts++;
       console.log(`🔄 Reconnecting in ${Math.round(delay / 1000)}s...`);
-      setTimeout(() => startBot(pairingState, handlers), delay);
+      // retire the dead socket so its listeners can never fire again, then reconnect exactly once
+      try { sock.ev.removeAllListeners(); sock.end(undefined); } catch { /* already closed */ }
+      scheduleReconnect(pairingState, handlers, delay);
     }
 
     if (connection === "open") {
