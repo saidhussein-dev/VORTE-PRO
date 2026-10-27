@@ -21,9 +21,6 @@ module.exports = {
     const chat = m.key.remoteJid;
     const start = Date.now();
 
-    await sock.sendMessage(chat, {
-      text: '◉ Collecting system metrics...',
-    });
 
     const latency = Date.now() - start;
     const uptime = formatUptime(process.uptime());
