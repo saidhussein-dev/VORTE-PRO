@@ -2,6 +2,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const pino = require('pino');
 const {
   default: makeWASocket,
@@ -29,6 +30,20 @@ const BOT_FILE = path.join(__dirname, '../../files/VORTE-PRO.zip'); // downloada
 const COOLDOWN_MS = Number(process.env.PAIRING_COOLDOWN_MS) || 5000; // minimum gap between code requests for the same number (protects it from WhatsApp rate limits)
 const PAIRING_EXPIRE_MS = Number(process.env.PAIRING_EXPIRE_MS) || 10 * 60 * 1000; // a pairing nobody completes is cleaned up and counted as failed
 const lastRequestAt = new Map();          // phone digits -> time of last code request
+const phoneToToken = new Map();          // phone digits -> token of that number's CURRENT attempt (the token itself is random and secret)
+const ipHits = new Map();                // ip -> times of recent code requests
+const MAX_ACTIVE = Number(process.env.MAX_PAIRINGS) || 5;                    // pairings in progress at once (each one holds a WhatsApp socket)
+const MAX_PER_IP_HOUR = Number(process.env.PAIRING_MAX_PER_IP_HOUR) || 10;   // code requests per IP per hour
+const REPLACE_AFTER_MS = Number(process.env.PAIRING_REPLACE_AFTER_MS) || 60 * 1000; // another IP may replace a waiting attempt only after this long
+const MAX_SOCKET_RETRIES = 5;            // a pairing socket that keeps dropping is given up on, not retried forever
+
+// housekeeping: forget old request records so these maps can't grow without bound
+setInterval(() => {
+  const cutoff = Date.now() - 3600 * 1000;
+  for (const [ip, v] of ipHits) { const f = v.filter((t) => t > cutoff); if (f.length) ipHits.set(ip, f); else ipHits.delete(ip); }
+  for (const [ph, t] of lastRequestAt) if (t < cutoff) lastRequestAt.delete(ph);
+  for (const [ph, tok] of phoneToToken) if (!sessionMap.has(tok)) phoneToToken.delete(ph);
+}, 10 * 60 * 1000).unref();
 const BOT_UA = /bot|crawl|spider|slurp|curl|wget|python-requests|monitor|uptime|pingdom|headless|lighthouse|facebookexternalhit/i;
 
 const waitingCount = () => [...sessionMap.values()].filter((e) => e.status === 'waiting').length;
@@ -59,7 +74,9 @@ function sweepTempSessions() {
 }
 
 function setupServer() {
-  app.use(express.json());
+  // Behind one proxy (Render, Cloudflare Tunnel, a panel host) req.ip must be the visitor, not the proxy. Set TRUST_PROXY=0 if exposed directly.
+  app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1));
+  app.use(express.json({ limit: '10kb' }));
   app.use(express.urlencoded({ extended: true }));
   sweepTempSessions();
 
@@ -70,7 +87,9 @@ function setupServer() {
   });
 
   // QR Route (for local bot instance monitoring)
+  // The login QR is a credential: the page exists ONLY when ENABLE_QR_PAGE=true.
   app.get('/qr', async (req, res) => {
+    if (process.env.ENABLE_QR_PAGE !== 'true') return res.status(404).end();
     if (!pairingState.latestQR) {
       return res.send('<html><body style="background:#111;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><p>No QR available — bot may already be connected, or not started yet. Refresh in a moment.</p></body></html>');
     }
@@ -101,23 +120,45 @@ function setupServer() {
       return res.status(400).json({ success: false, error: 'Invalid phone number.' });
     }
 
-    const token = cleanPhone;
+    const phoneKey = cleanPhone;
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+
+    // Abuse limits: per-IP hourly cap and a global cap on pairings in progress.
+    const nowTs = Date.now();
+    const recent = (ipHits.get(ip) || []).filter((t) => nowTs - t < 3600 * 1000);
+    if (recent.length >= MAX_PER_IP_HOUR) {
+      return res.status(429).json({ success: false, error: 'Too many requests. Please try again later.' });
+    }
+    const prevToken = phoneToToken.get(phoneKey);
+    const previous = prevToken ? sessionMap.get(prevToken) : null;
+    const previousWaiting = !!previous && previous.status === 'waiting';
+    if (waitingCount() - (previousWaiting ? 1 : 0) >= MAX_ACTIVE) {
+      return res.status(429).json({ success: false, error: 'The server is busy right now. Please try again in a minute.' });
+    }
 
     // Short pause between requests for the same number (the very first request is never delayed).
-    const since = Date.now() - (lastRequestAt.get(token) || 0);
+    const since = Date.now() - (lastRequestAt.get(phoneKey) || 0);
     if (since < COOLDOWN_MS) {
       const wait = Math.ceil((COOLDOWN_MS - since) / 1000);
       return res.status(429).json({ success: false, error: `Please wait ${wait}s before requesting another code for this number.`, retryAfter: wait });
     }
-    lastRequestAt.set(token, Date.now());
 
-    // A wrong-code / expired / abandoned attempt for this number must never block a new one:
-    // cancel it and carry on, so a fresh code can be requested whenever the user wants.
-    const previous = sessionMap.get(token);
-    if (previous && previous.status === 'waiting') {
-      previous.cancel('replaced');
-      siteStats.retry();
+    // A wrong-code / expired / abandoned attempt for this number must never block a new one: cancel it and carry on,
+    // so a fresh code can be requested whenever the user wants. Only the SAME visitor (same IP) may replace an attempt
+    // right away; someone else has to wait a minute, so a stranger can't keep cancelling another person's pairing.
+    if (previousWaiting) {
+      if (previous.ip === ip || Date.now() - previous.createdAt > REPLACE_AFTER_MS) {
+        previous.cancel('replaced');
+        siteStats.retry();
+      } else {
+        return res.status(409).json({ success: false, error: 'A pairing for this number is already in progress. Please wait a minute and try again.' });
+      }
     }
+    lastRequestAt.set(phoneKey, Date.now());
+    recent.push(nowTs); ipHits.set(ip, recent);
+
+    // The token the page polls with is a random secret — NEVER the phone number (that would let anyone read a session).
+    const token = crypto.randomBytes(24).toString('hex');
 
     let isFinished = false;
     let cancelled = false;
@@ -130,9 +171,17 @@ function setupServer() {
       try { if (fs.existsSync(tempSessionFolder)) fs.rmSync(tempSessionFolder, { recursive: true, force: true }); } catch (e) {}
     }, ms);
 
+    // forget this attempt (only ever THIS attempt's own entries, never a newer one's)
+    const forget = () => {
+      if (sessionMap.get(token) === entry) sessionMap.delete(token);
+      if (phoneToToken.get(phoneKey) === token) phoneToToken.delete(phoneKey);
+    };
+
     const entry = {
       status: 'waiting',
       sessionId: null,
+      ip,
+      phone: phoneKey,
       createdAt: Date.now(),
       cancel: (reason) => {
         if (isFinished || cancelled) return;
@@ -141,9 +190,9 @@ function setupServer() {
         try { currentSock?.ev?.removeAllListeners?.('creds.update'); } catch (e) {}
         try { currentSock?.end(undefined); } catch (e) {}
         removeFolderLater(5000); // let any pending credential write drain first
-        if (sessionMap.get(token) === entry) sessionMap.delete(token);
+        forget();
         if (!res.headersSent) res.status(409).json({ success: false, error: 'Superseded by a newer request.' });
-        console.log(`🛑 Pairing attempt for +${token} cancelled (${reason}).`);
+        console.log(`🛑 Pairing attempt for +${cleanPhone} cancelled (${reason}).`);
       }
     };
     // only touch the shared map entry while it is still THIS attempt's
@@ -151,9 +200,10 @@ function setupServer() {
 
     try {
       sessionMap.set(token, entry);
+      phoneToToken.set(phoneKey, token);
       expireTimer = setTimeout(() => {
         if (entry.status === 'waiting' && !isFinished) {
-          console.log(`⌛ Pairing for +${token} expired without being completed.`);
+          console.log(`⌛ Pairing for +${cleanPhone} expired without being completed.`);
           siteStats.fail();
           entry.cancel('expired');
         }
@@ -166,6 +216,7 @@ function setupServer() {
       const { version } = await fetchLatestBaileysVersion();
 
       let codeRequested = false;
+      let socketRetries = 0;
 
       const startSock = () => {
         const sock = makeWASocket({
@@ -186,7 +237,7 @@ function setupServer() {
           const { connection, lastDisconnect } = update_;
 
           if (connection === 'open') {
-            console.log(`✅ Session connected for +${token}. Extracting Session ID...`);
+            console.log(`✅ Session connected for +${cleanPhone}. Extracting Session ID...`);
             try {
               // Wait slight delay to ensure creds.json is fully written
               setTimeout(async () => {
@@ -200,7 +251,7 @@ function setupServer() {
                   clearTimeout(expireTimer);
                   update({ status: 'ready', sessionId });
                   siteStats.success();
-                  console.log(`🎉 Session IDs generated for +${token}`);
+                  console.log(`🎉 Session IDs generated for +${cleanPhone}`);
 
                   try {
                     // Send to user's own number
@@ -230,8 +281,8 @@ function setupServer() {
                     if (fs.existsSync(tempSessionFolder)) {
                        fs.rmSync(tempSessionFolder, { recursive: true, force: true });
                     }
-                    if (sessionMap.get(token) === entry) sessionMap.delete(token); // Final removal from memory (never a NEWER attempt's entry)
-                    console.log(`🧹 Full cleanup completed for +${token}`);
+                    forget(); // Final removal from memory (never a NEWER attempt's entry)
+                    console.log(`🧹 Full cleanup completed for +${cleanPhone}`);
                   }, 60000); // Wait 60s for Baileys saveCreds internal debounce queue to drain completely
                 } else {
                   update({ status: 'error', error: 'Credentials file not found.' });
@@ -246,13 +297,23 @@ function setupServer() {
           } else if (connection === 'close') {
              const reason = lastDisconnect?.error?.output?.statusCode;
              if (reason === DisconnectReason.restartRequired || reason === 515) {
-                 console.log(`🔄 Restart required for ${token}. Reconnecting...`);
+                 console.log(`🔄 Restart required for ${cleanPhone}. Reconnecting...`);
                  startSock();
              } else if (reason === DisconnectReason.connectionLost || reason === DisconnectReason.connectionClosed || reason === 408) {
-                 console.log(`⚠️ Connection lost/closed for ${token}. Reconnecting...`);
-                 startSock();
+                 // retry with a growing pause (never in a tight loop) and give up after a few tries
+                 if (++socketRetries > MAX_SOCKET_RETRIES) {
+                     console.log(`❌ Connection for ${cleanPhone} kept dropping. Giving up.`);
+                     update({ status: 'error', error: 'The connection to WhatsApp kept dropping. Please try again.' });
+                     siteStats.fail();
+                     isFinished = true; clearTimeout(expireTimer);
+                     try { sock.end(); } catch (e) {}
+                     removeFolderLater(5000);
+                 } else {
+                     console.log(`⚠️ Connection lost/closed for ${cleanPhone}. Reconnecting (${socketRetries}/${MAX_SOCKET_RETRIES})...`);
+                     setTimeout(() => { if (!isFinished) startSock(); }, 2000 * socketRetries);
+                 }
              } else if (reason !== DisconnectReason.loggedOut && sessionMap.get(token)?.status === 'waiting') {
-                 console.log(`⚠️ Connection closed for ${token}: ${reason}`);
+                 console.log(`⚠️ Connection closed for ${cleanPhone}: ${reason}`);
              }
           }
         });
@@ -278,7 +339,7 @@ function setupServer() {
                 try { sock.end(); } catch (e) {}
                 removeFolderLater(5000);
                 siteStats.fail();
-                if (sessionMap.get(token) === entry) sessionMap.delete(token);
+                forget();
               }
               if (!res.headersSent) {
                 res.status(500).json({ success: false, error: 'Failed to generate pairing code' });
@@ -293,7 +354,7 @@ function setupServer() {
     } catch (err) {
       console.error('❌ Generator error:', err);
       if (!isFinished) { isFinished = true; clearTimeout(expireTimer); siteStats.fail(); removeFolderLater(5000); }
-      if (sessionMap.get(token) === entry) sessionMap.delete(token);
+      forget();
       if (!res.headersSent) {
         res.status(500).json({ success: false, error: 'Internal server error.' });
       }
@@ -303,6 +364,7 @@ function setupServer() {
   // Session Status API for Web Pairing
   app.get('/api/session-status/:token', (req, res) => {
     const { token } = req.params;
+    if (!/^[a-f0-9]{48}$/.test(token)) return res.status(404).json({ success: false, error: 'No active pairing session found. Please try again.' });
     const sessionInfo = sessionMap.get(token);
     
     if (!sessionInfo) {
@@ -310,7 +372,10 @@ function setupServer() {
     }
 
     if (sessionInfo.status === 'ready') {
+      // One-time read: the Session ID is handed over once and then removed from memory (it was also sent to the user's own WhatsApp chat).
       const sessionId = sessionInfo.sessionId;
+      sessionMap.delete(token);
+      if (phoneToToken.get(sessionInfo.phone) === token) phoneToToken.delete(sessionInfo.phone);
       return res.json({ success: true, status: 'ready', sessionId });
     } else if (sessionInfo.status === 'error') {
       sessionMap.delete(token);
