@@ -12,6 +12,9 @@ const GROUP_CACHE_TTL_MS = 15000;
 const lidToPn = new Map();        // lid user -> phone digits   (learned at runtime)
 const pnToLid = new Map();        // phone digits -> lid user
 const metaCache = new Map();      // group jid -> { at, meta }
+const MAX_ENTRIES = 5000;
+/** Keep a Map from growing forever: drop the oldest entries. */
+function cap(map) { while (map.size > MAX_ENTRIES) map.delete(map.keys().next().value); }
 
 /** "255778271055:12@s.whatsapp.net" -> { user: "255778271055", server: "s.whatsapp.net" } */
 function parse(jid) {
@@ -38,7 +41,7 @@ function learn(a, b) {
   const [lidKey, pnKey] = ka.startsWith("lid:") ? [ka, kb] : [kb, ka];
   if (!lidKey.startsWith("lid:") || !pnKey.startsWith("pn:")) return;
   const lid = lidKey.slice(4), pn = pnKey.slice(3);
-  if (pn) { lidToPn.set(lid, pn); pnToLid.set(pn, lid); }
+  if (pn) { lidToPn.set(lid, pn); pnToLid.set(pn, lid); cap(lidToPn); cap(pnToLid); }
 }
 
 /** All keys that identify this JID (itself + any learned counterpart). */
@@ -82,6 +85,7 @@ async function getMetadata(sock, chat, { force = false } = {}) {
   const meta = await sock.groupMetadata(chat);
   (meta?.participants || []).forEach(participantKeys); // learns lid <-> phone pairs
   metaCache.set(chat, { at: Date.now(), meta });
+  cap(metaCache);
   return meta;
 }
 

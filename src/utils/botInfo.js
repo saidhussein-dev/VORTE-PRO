@@ -25,12 +25,11 @@ function formatPhone(digits) {
 /** The linked account's number, nicely written — or a clear placeholder. */
 const botPhone = (sock) => { const n = botNumber(sock); return n ? formatPhone(n) : "not connected"; };
 
-/** Owner number(s) from OWNER_1 / OWNER_2; when none is configured the linked account itself is the owner. */
+/** Owner number(s) shown to people: OWNER_1 / OWNER_2 when set, otherwise the bot creator's number (display only). */
 function ownerNumbers(sock) {
   const set = [config.owner1, config.owner2].filter(Boolean);
   if (set.length) return set;
-  const own = botNumber(sock);
-  return own ? [own] : [];
+  return config.creator ? [config.creator] : [];
 }
 
 /** Owner numbers, nicely written. */

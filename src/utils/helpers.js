@@ -155,7 +155,25 @@ function getBody(m) {
   );
 }
 
+/**
+ * The ONE owner check for commands: learns the LID <-> phone mapping for this sender first, then accepts
+ * the configured owners, sudo users, and the paired number itself (messages the linked account sends).
+ */
+async function senderIsOwner(sock, m) {
+  const perms = await getPermissions(sock, m);
+  return !!perms.isOwner;
+}
+
+/** Same, but for actions sudo users must NOT be able to do (sudo list, eval, update): OWNER_1/OWNER_2 or the paired number. */
+async function senderIsTrueOwner(sock, m) {
+  try { await identity.resolveSender(sock, m); } catch { /* fall through to what is already known */ }
+  const sender = m.key.participant || m.key.remoteJid;
+  return !!m.key?.fromMe || isTrueOwner(sender);
+}
+
 module.exports = {
+  senderIsOwner,
+  senderIsTrueOwner,
   isTrueOwner,
   isGroup,
   jidToNumber,
