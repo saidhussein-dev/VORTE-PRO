@@ -8,9 +8,7 @@ module.exports = {
     const chat = m.key.remoteJid;
     const start = Date.now();
 
-    await sock.sendMessage(chat, {
-      text: 'root@vorte:~$ ./diagnostics',
-    });
+    
 
     const latency = Date.now() - start;
     const socketConnected = Boolean(sock.user);
