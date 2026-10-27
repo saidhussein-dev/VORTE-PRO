@@ -1,12 +1,35 @@
-// src/commands/ping.js
+
 module.exports = {
   name: 'ping',
-  scope: "BOTH",
-  description: 'Check bot latency',
-  async execute(sock, m, args) {
+  scope: 'BOTH',
+  description: 'Check bot response speed',
+
+  async execute(sock, m) {
+    const chat = m.key.remoteJid;
     const start = Date.now();
-    await sock.sendMessage(m.key.remoteJid, { text: "Pinging..." });
+
+    await sock.sendMessage(chat, {
+      text: '⚡ Running speed test...',
+    });
+
     const latency = Date.now() - start;
-    await sock.sendMessage(m.key.remoteJid, { text: `🏓 Pong! Latency: ${latency}ms` });
-  }
+    const state =
+      latency < 300 ? 'STABLE' :
+      latency < 800 ? 'BUSY' : 'SLOW';
+
+    await sock.sendMessage(chat, {
+      text: [
+        '╭━━━〔 VORTE PRO 〕━━━╮',
+        '┃',
+        '┃  SYSTEM: ONLINE',
+        `┃  SPEED: ${latency}ms`,
+        `┃  STATE: ${state}`,
+        '┃',
+        '┃  ⚡ RESPONSE VERIFIED',
+        '┃  ▰▰▰▰▰▰▰▰▰▰ 100%',
+        '┃',
+        '╰━━━━━━━━━━━━━━━━━━╯',
+      ].join('\n'),
+    });
+  },
 };
