@@ -12,8 +12,16 @@ const interactiveMenu = require("../../utils/interactiveMenu");
 const pollMenu = require("../../utils/ownerPollMenu");
 const tapDebug = require("../../utils/tapDebug");
 
-const lastCommand = {};
-const recentMessages = {}; // for antispam flood detection
+const lastCommand = new Map();     // chat_sender -> last command time
+const recentMessages = new Map();  // chat_sender -> recent message times (antispam flood detection)
+const aiHits = new Map();          // sender -> times they used the @bot AI trigger
+// Old entries are swept every 5 minutes so these maps can never grow without bound.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, t] of lastCommand) if (now - t > 60 * 1000) lastCommand.delete(k);
+  for (const [k, v] of recentMessages) if (!v.length || now - v[v.length - 1] > 5 * 60 * 1000) recentMessages.delete(k);
+  for (const [k, v] of aiHits) { const f = v.filter((t) => now - t < 3600 * 1000); if (f.length) aiHits.set(k, f); else aiHits.delete(k); }
+}, 5 * 60 * 1000).unref();
 
 const ANTIBUG_MAX_TEXT_LENGTH = 4000;
 const ANTIBUG_MAX_VCARD_LENGTH = 3000;
@@ -35,7 +43,7 @@ function senderNumbers(sender) {
 const FRESH_REPLY_MS = 60 * 1000;
 
 async function handleMessage(sock, upsert, getSettings, saveSettings) {
-  tapDebug.recordUpsert(upsert); // only does anything while the owner has switched on .debugtaps
+  try { tapDebug.recordUpsert(upsert); } catch (e) { /* debug aid only — must never break message handling */ } // only does anything while the owner has switched on .debugtaps
   if (upsert.type !== "notify") {
     // WhatsApp labels some deliveries "append" (history, and sometimes the account's own actions). Those are normally
     // old messages and stay ignored. But a button/list tap or poll vote that is only seconds old is somebody tapping
@@ -145,8 +153,17 @@ async function processMessage(sock, m, getSettings, saveSettings) {
 
   // AI Auto-reply
   if (body.toLowerCase().includes("@bot") && openai.isAvailable()) {
-    const query = body.replace(/@bot/gi, "").trim();
+    const query = body.replace(/@bot/gi, "").trim().slice(0, 2000);
     if (query) {
+      // Everyone but the owner is limited, so a group can't run up the AI bill.
+      const limit = Number(process.env.AI_USER_LIMIT_PER_HOUR) || 10;
+      const nowAi = Date.now();
+      const hits = (aiHits.get(sender) || []).filter((t) => nowAi - t < 3600 * 1000);
+      if (!isOwner && hits.length >= limit) {
+        await sock.sendMessage(chat, { text: `⏳ AI limit reached (${limit} per hour). Please try again later.` }, { quoted: m }).catch(() => {});
+        return;
+      }
+      hits.push(nowAi); aiHits.set(sender, hits);
       const reply = await openai.chatCompletion(query);
       if (reply) await sock.sendMessage(chat, { text: reply });
     }
@@ -186,11 +203,11 @@ async function processMessage(sock, m, getSettings, saveSettings) {
   if (isGroupChat && groupSetting.antispam && !isOwner && body) {
     const key = `${chat}_${sender}`;
     const now = Date.now();
-    const timestamps = (recentMessages[key] || []).filter((t) => now - t < ANTISPAM_WINDOW_MS);
+    const timestamps = (recentMessages.get(key) || []).filter((t) => now - t < ANTISPAM_WINDOW_MS);
     timestamps.push(now);
-    recentMessages[key] = timestamps;
+    recentMessages.set(key, timestamps);
     if (timestamps.length > ANTISPAM_MAX_MESSAGES && !(await helpers.isAdmin(sock, chat, sender))) {
-      recentMessages[key] = []; // reset window after flagging, so one flood = one action
+      recentMessages.set(key, []); // reset window after flagging, so one flood = one action
       await antiActions.enforce(sock, { chat, sender, m, feature: "antispam", settings, saveSettings });
       return;
     }
@@ -232,8 +249,8 @@ async function processMessage(sock, m, getSettings, saveSettings) {
     // Cooldown
     const now = Date.now();
     const cooldownKey = `${chat}_${sender}`;
-    if (lastCommand[cooldownKey] && (now - lastCommand[cooldownKey]) < 1000) return;
-    lastCommand[cooldownKey] = now;
+    if (lastCommand.has(cooldownKey) && (now - lastCommand.get(cooldownKey)) < 1000) return;
+    lastCommand.set(cooldownKey, now);
 
     // Safemode: small human-like delay before responding
     if (globalSetting.safemode) {
