@@ -65,18 +65,19 @@ module.exports = {
     const plugins = context?.primaryCount ?? context?.commandCount ?? "?";
 
     const header = `
-╔══════════════════════╗
-║        🤖 ${botName}        ║
-╚══════════════════════╝
-
-➤ Owner   : ${ownerName}\n➤ Owner no: ${botInfo.ownerPhones(sock).join(" · ") || "not set"}\n➤ Bot no. : ${botInfo.botPhone(sock)}
-➤ Prefix  : ${prefixLine}
-➤ Version : ${version}
-➤ Mode    : ${mode.toUpperCase()}
-➤ Plugins : ${plugins}
-➤ Speed   : ${speed}
-➤ Usage   : ${hours}h ${minutes}m ${seconds}s
-➤ Ram     : ${usedRam}MB / ${totalRam}MB
+┌───────〔 ${botName} 〕───────┐
+|
+| ➤ Owner   : 𝔇𝔢𝔞𝔱𝔥𝔰𝔱𝔯𝔬𝔨𝔢
+| ➤ Owner no: ${botInfo.ownerPhones(sock).join(" · ") || "not set"}\n
+| ➤ Bot no. : ${botInfo.botPhone(sock)}
+| ➤ Prefix  : ${prefixLine}
+| ➤ Version : ${version}
+| ➤ Mode    : ${mode.toUpperCase()}
+| ➤ Plugins : ${plugins}
+| ➤ Speed   : ${speed}
+| ➤ Usage   : ${hours}h ${minutes}m ${seconds}s
+| ➤ RAM     : ${usedRam}MB / ${totalRam}MB
+└───────────────────────────────┘
 `;
 
     const menuBody = buildMenuBody(prefix, context?.registry || new Map()) + `\n📢 ${config.channel.name}: ${config.channel.url}\n`;
