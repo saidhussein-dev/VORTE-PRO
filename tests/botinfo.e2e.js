@@ -40,7 +40,7 @@ const linked = (id) => { const s = makeSock(); s.user = { id: `${id}:7@s.whatsap
   s = linked("255778271055");
   await run(s, ".owner");
   const card = s.sent.find((x) => x.content.contacts);
-  check("a contact card for the bot number is sent", card && /waid=255778271055/.test(card.content.contacts.contacts[0].vcard));
+  check("a contact card for the OWNER number is sent", card && /waid=255757332074/.test(card.content.contacts.contacts[0].vcard));
   s = await run(linked("255778271055"), ".menu");
   const menu = s.sent.map((x) => x.content.text || x.content.caption || "").join("\n");
   check("the menu header shows the owner's number and the bot's number", /Owner no: \+255 757 332 074/.test(menu) && /Bot no\. : \+255 778 271 055/.test(menu), menu.slice(0, 400));

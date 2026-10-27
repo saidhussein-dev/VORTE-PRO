@@ -77,7 +77,10 @@ const complete = async (sock, folder) => {            // what WhatsApp does when
   const quick = await post("/api/request-code", { phone: PHONE });  // impatient double tap
   check("a rapid second request -> polite 429 with seconds to wait (not 'already in progress')", quick.status === 429 && quick.json.retryAfter >= 1 && /Please wait \d+s/.test(quick.json.error) && !/in progress/.test(quick.json.error), quick);
   const a = await pA;
-  check("first request -> pairing code issued (the blocked tap did not cancel it)", a.status === 200 && a.json.success && a.json.code === "ABCD-1234" && a.json.token === PHONE, a);
+  check("first request -> pairing code issued (the blocked tap did not cancel it)", a.status === 200 && a.json.success && a.json.code === "ABCD-1234" && /^[a-f0-9]{48}$/.test(a.json.token) && a.json.token !== PHONE, a);
+  check("the token is a random secret, never the phone number", !String(a.json.token).includes(PHONE));
+  const tokA = a.json.token;
+  check("the phone number itself is NOT a valid token (nobody can read a session by knowing the number)", (await get("/api/session-status/" + PHONE)).status === 404);
   const first = instances[instances.length - 1], firstFolder = folders[folders.length - 1];
   check("pairing code requested for exactly that number", first.codeFor === PHONE);
   check("the working attempt is still open", first.ended === false);
@@ -85,21 +88,25 @@ const complete = async (sock, folder) => {            // what WhatsApp does when
   // user typed the wrong code in WhatsApp... nothing happens; they ask again:
   const b = await post("/api/request-code", { phone: PHONE });
   check("asking again -> a NEW code for the SAME number is issued (previously: 'pairing in progress' until restart)", b.status === 200 && b.json.success && b.json.code === "ABCD-1234", b);
+  const tokB = b.json.token;
+  check("the replacement attempt gets its own new token", tokB !== tokA && /^[a-f0-9]{48}$/.test(tokB));
+  check("the replaced attempt's token no longer works", (await get("/api/session-status/" + tokA)).status === 404);
   const second = instances[instances.length - 1], secondFolder = folders[folders.length - 1];
   check("the old attempt was cancelled (socket closed)", first.ended === true && second !== first && second.ended === false);
   check("each attempt has its own temp folder", firstFolder !== secondFolder);
   st = await stats(); check("only the new attempt is waiting", st.activePairings === 1, st);
   check("replacing an attempt counts as a retry, NOT a failure", st.failed === 0, st);
-  const status1 = await get("/api/session-status/" + PHONE);
+  const status1 = await get("/api/session-status/" + tokB);
   check("the token now follows the new attempt (waiting)", status1.json.success && status1.json.status === "waiting", status1.json);
   first.ev.emit("connection.update", { connection: "open" }); await sleep(100);
-  check("late events from the cancelled attempt are ignored", (await get("/api/session-status/" + PHONE)).json.status === "waiting");
+  check("late events from the cancelled attempt are ignored", (await get("/api/session-status/" + tokB)).json.status === "waiting");
 
   section("successful pairing");
   await complete(second, secondFolder);
   await sleep(4700);
-  const ready = await get("/api/session-status/" + PHONE);
+  const ready = await get("/api/session-status/" + tokB);
   check("session is ready and is a VORTE_PRO~ id", ready.json.status === "ready" && /^VORTE_PRO~/.test(ready.json.sessionId), ready.json);
+  check("the Session ID is handed over ONCE: a second read finds nothing", (await get("/api/session-status/" + tokB)).status === 404);
   const decoded = JSON.parse(Buffer.from(ready.json.sessionId.slice(10), "base64").toString());
   check("the id decodes to the credentials file", decoded.me.id.startsWith(PHONE));
   check("the session was also sent to the user's own WhatsApp", second.sent.length === 2 && /SESSION GENERATED/.test(second.sent[0].c.text) && second.sent[1].c.text === ready.json.sessionId, second.sent.map((x) => x.c.text.slice(0, 30)));
@@ -108,6 +115,7 @@ const complete = async (sock, folder) => {            // what WhatsApp does when
   let c = await post("/api/request-code", { phone: PHONE });
   check("after success the same number can start a new pairing straight away", c.status === 200 && c.json.success, c);
   const third = instances[instances.length - 1];
+  const tokC = c.json.token;
   check("a finished session does not count as 'replaced'", (await stats()).failed === 0);
 
   section("failures are counted");
@@ -127,7 +135,8 @@ const complete = async (sock, folder) => {            // what WhatsApp does when
   st = await stats();
   check("expired attempts are cleaned up and counted as failed", st.failed >= 2 && st.activePairings === 0, st);
   check("an expired attempt's socket is closed", third.ended === true && instances[instances.length - 1].ended === true);
-  check("expired token -> status 404 with a clear message", (await get("/api/session-status/" + PHONE)).status === 404);
+  check("expired token -> status 404 with a clear message", (await get("/api/session-status/" + tokC)).status === 404);
+  check("the login QR page is OFF unless ENABLE_QR_PAGE=true", (await get("/qr")).status === 404);
 
   section("temp files");
   await sleep(5200);

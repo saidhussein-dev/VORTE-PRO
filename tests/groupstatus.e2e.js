@@ -85,6 +85,8 @@ const replyTo = (n, text, quotedMessage) => ({ key: { remoteJid: G, participant:
   check("caption = the command text", inner?.imageMessage?.caption === "Look at this", inner?.imageMessage?.caption);
   check("media key / url present (a real, uploadable image message)", !!inner?.imageMessage?.mediaKey && /mmg\.whatsapp\.net/.test(inner.imageMessage.url || ""), Object.keys(inner?.imageMessage || {}));
   check("reply says photo sent", /✅ Photo sent as a group status/.test(lastText(s)), lastText(s));
+  check("the photo is ALSO posted in the group chat itself", s.sent.some((x) => x.jid === G && x.content.image && x.content.caption === "Look at this"), s.sent.map((x) => [x.jid, Object.keys(x.content)]));
+  check("reply says it was also posted in the chat", /posted in this chat/.test(lastText(s)), lastText(s));
 
   section("MEDIA status: reply to a photo / video / voice note");
   s = statusSock(); await run(s, replyTo(1, ".togroupstatus", { imageMessage: { caption: "original caption", mimetype: "image/png", fileLength: PNG.length } }), st);
@@ -96,9 +98,11 @@ const replyTo = (n, text, quotedMessage) => ({ key: { remoteJid: G, participant:
   check("the REPLIED message is what gets downloaded (key.id = stanzaId)", dl?.key?.id === "ORIG1" && dl?.key?.remoteJid === G, dl?.key);
   cmd._deps.download = async () => Buffer.from("fakevideo");
   s = statusSock(); await run(s, replyTo(1, ".togroupstatus Clip", { videoMessage: { mimetype: "video/mp4", fileLength: 9, gifPlayback: false } }), st);
+  check("video is ALSO posted in the group chat", s.sent.some((x) => x.jid === G && x.content.video), s.sent.map((x) => Object.keys(x.content)));
   check("video: uploaded as video, relayed in the wrapper", s.uploads.includes("video") && !!wrapped(s)?.videoMessage && wrapped(s).videoMessage.caption === "Clip", { uploads: s.uploads, lastText: lastText(s), keys: Object.keys(wrapped(s) || {}) });
   cmd._deps.download = async () => Buffer.from("fakeaudio");
   s = statusSock(); await run(s, replyTo(1, ".togroupstatus", { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, fileLength: 9 } }), st);
+  check("voice note is ALSO posted in the group chat", s.sent.some((x) => x.jid === G && x.content.audio));
   check("voice note: posted as audio with ptt=true", !!wrapped(s)?.audioMessage && wrapped(s).audioMessage.ptt === true, { lastText: lastText(s), keys: Object.keys(wrapped(s) || {}) });
   s = statusSock(); await run(s, replyTo(1, ".togroupstatus", { documentMessage: { mimetype: "application/pdf" } }), st);
   check("document -> refused clearly, nothing sent", s.relayed.length === 0 && /not documents or stickers/.test(lastText(s)));
