@@ -97,7 +97,7 @@ async function main() {
     if (process.env.DOWNLOAD_PREWARM !== 'false') {
       const warm = setTimeout(() => {
         const dl = require('./src/services/downloaders/ytdlp')
-        const ff = require('./services/downloaders/ffmpegCheck');
+        const ff = require('./src/services/downloaders/ffmpegCheck');
         Promise.allSettled([dl.ensureBinary(), ff.ensureFfmpeg()]).catch(() => {});
       }, 4000);
       if (warm.unref) warm.unref();
