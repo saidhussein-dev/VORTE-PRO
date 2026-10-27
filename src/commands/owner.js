@@ -18,10 +18,11 @@ module.exports = {
       `Bot number: ${botInfo.botPhone(sock)}${owners.length === 1 && owners[0] === bot ? "  (the owner's own account)" : ""}`
     ];
     await sock.sendMessage(chat, { text: panel("👑 BOT OWNER", lines) });
-    // a contact card so the number can be saved with one tap (the linked account = what people message)
-    if (bot) {
+    // a contact card of the OWNER (falls back to the linked account only when no owner is configured)
+    const target = owners[0] || bot;
+    if (target) {
       const display = name || "Bot Owner";
-      const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${display}\nTEL;type=CELL;type=VOICE;waid=${bot}:+${bot}\nEND:VCARD`;
+      const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${display}\nTEL;type=CELL;type=VOICE;waid=${target}:+${target}\nEND:VCARD`;
       try { await sock.sendMessage(chat, { contacts: { displayName: display, contacts: [{ vcard }] } }); } catch (e) { /* the text above already has the number */ }
     }
   }

@@ -8,7 +8,7 @@ module.exports = {
   async execute(sock, m, args) {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
-    if (!helpers.isOwner(sender) && !m.key?.fromMe) return sock.sendMessage(chat, { text: "❌ Owner only command." });
+    if (!(await helpers.senderIsOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Owner only command." });
 
     const mentioned = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     // Group name = the text with @mentions stripped out

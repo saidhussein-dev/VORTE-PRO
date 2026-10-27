@@ -10,7 +10,7 @@ module.exports = {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
 
-    if (!helpers.isTrueOwner(sender)) return sock.sendMessage(chat, { text: "❌ Owner only command." });
+    if (!(await helpers.senderIsTrueOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Owner only command." });
 
     await sock.sendMessage(chat, { text: "⬇️ Pulling latest updates..." });
 

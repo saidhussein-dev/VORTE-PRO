@@ -11,7 +11,7 @@ module.exports = {
     const sender = m.key.participant || m.key.remoteJid;
     if (!helpers.isGroup(chat)) return sock.sendMessage(chat, { text: "❌ This command is for groups only." });
 
-    const isOwner = helpers.isOwner(sender) || m.key?.fromMe;
+    const isOwner = await helpers.senderIsOwner(sock, m);
     const isAdmin = await helpers.isAdmin(sock, chat, sender);
     if (!isOwner && !isAdmin) return sock.sendMessage(chat, { text: "❌ Only group admins or my owner can use this." });
 

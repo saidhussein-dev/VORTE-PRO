@@ -108,7 +108,15 @@ module.exports = {
         console.error("❌ group status failed:", e.message);
         return reply([`❌ I couldn't post the ${label} as a group status: ${e.message}`]);
       }
-      return reply([`✅ ${label[0].toUpperCase() + label.slice(1)} sent as a group status.`, "ℹ️ WhatsApp doesn't confirm delivery to bots — check the group's status tab."]);
+      // ...and ALSO post the same media in the group chat itself, so members see it right away.
+      let alsoInChat = true;
+      try {
+        await sock.sendMessage(chat, content);
+      } catch (e) {
+        alsoInChat = false;
+        console.error("❌ group status: media posted as status but could not be sent to the chat:", e.message);
+      }
+      return reply([`✅ ${label[0].toUpperCase() + label.slice(1)} sent as a group status${alsoInChat ? " and posted in this chat" : ""}.`, alsoInChat ? null : `⚠️ I couldn't also post the ${label} in the chat.`, "ℹ️ WhatsApp doesn't confirm delivery to bots — check the group's status tab."]);
     }
 
     // ---- text status ----

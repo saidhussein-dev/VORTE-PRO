@@ -8,7 +8,7 @@ module.exports = {
   async execute(sock, m, args, getSettings, saveSettings) {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
-    if (!helpers.isOwner(sender) && !m.key?.fromMe) return sock.sendMessage(chat, { text: "❌ Owner only command." });
+    if (!(await helpers.senderIsOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Owner only command." });
 
     const message = args.join(" ");
     if (!message) return sock.sendMessage(chat, { text: "Usage: .anticallmsg Sorry, calls are not accepted. Please text instead." });

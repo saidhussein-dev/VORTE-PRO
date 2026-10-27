@@ -9,7 +9,7 @@ module.exports = {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
     // Owner-only on purpose: otherwise anyone could push the bot into arbitrary groups.
-    if (!helpers.isOwner(sender) && !m.key?.fromMe) return sock.sendMessage(chat, { text: "❌ Owner only command." });
+    if (!(await helpers.senderIsOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Owner only command." });
 
     const match = (args[0] || "").match(/chat\.whatsapp\.com\/([A-Za-z0-9]{10,32})/);
     if (!match) return sock.sendMessage(chat, { text: "Usage: .join https://chat.whatsapp.com/<code>" });

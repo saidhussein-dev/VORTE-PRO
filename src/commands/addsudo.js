@@ -12,7 +12,7 @@ module.exports = {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
     // Only env-configured owners may grant sudo — a sudo user must not be able to escalate others.
-    if (!helpers.isTrueOwner(sender) && !m.key?.fromMe) return sock.sendMessage(chat, { text: "❌ Only the bot's main owner can manage sudo users." });
+    if (!(await helpers.senderIsTrueOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Only the bot's main owner can manage sudo users." });
 
     const mentioned = m.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
     const number = helpers.normalizeJid(mentioned || args[0] || "");

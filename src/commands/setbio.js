@@ -9,7 +9,7 @@ module.exports = {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
 
-    if (!helpers.isOwner(sender)) return sock.sendMessage(chat, { text: "❌ Owner only command." });
+    if (!(await helpers.senderIsOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Owner only command." });
 
     const newBio = args.join(" ");
     if (!newBio) return sock.sendMessage(chat, { text: "Usage: .setbio <text>" });

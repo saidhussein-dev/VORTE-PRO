@@ -8,7 +8,7 @@ module.exports = {
   async execute(sock, m, args) {
     const chat = m.key.remoteJid;
     const sender = m.key.participant || m.key.remoteJid;
-    if (!helpers.isOwner(sender) && !m.key?.fromMe) return sock.sendMessage(chat, { text: "❌ Owner only command." });
+    if (!(await helpers.senderIsOwner(sock, m))) return sock.sendMessage(chat, { text: "❌ Owner only command." });
     try {
       const p = await sock.fetchPrivacySettings(true);
       const lines = Object.entries(p || {}).map(([k, v]) => `• ${k}: ${v}`);
