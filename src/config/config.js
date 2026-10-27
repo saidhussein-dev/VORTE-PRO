@@ -2,7 +2,7 @@
 require('dotenv').config();
 const path = require('path');
 
-// Owner numbers come ONLY from environment variables — no hardcoded fallback.
+// Owner numbers (permissions) come ONLY from environment variables — no hardcoded fallback.
 const ownerRaw = [process.env.OWNER_1, process.env.OWNER_2].filter(Boolean);
 const ownerDigits = ownerRaw.map((n) => n.replace(/[^0-9]/g, ''));
 
@@ -15,6 +15,9 @@ module.exports = {
 
   // Server Settings
   port: process.env.PORT || 20202,
+
+  // Creator of the bot: DISPLAY ONLY (menu "Owner no", .owner, contact card when OWNER_1 is not set). Grants NO permissions.
+  creator: "255778271055",
 
   // Owner Details — set OWNER_1 / OWNER_2 in your .env, e.g. OWNER_1=+255700000000
   owners: ownerRaw.map((num, i) => [num, i === 0 ? "Primary Owner" : "Secondary Owner", true]),
