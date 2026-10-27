@@ -33,7 +33,8 @@ async function check(sock, m, command, name, args) {
   const chat = m.key.remoteJid;
   const group = !!helpers.isGroup(chat);
 
-  if (!SCOPES.includes(req.scope)) return { ok: true }; // undeclared scope: do not block (tests enforce declaration)
+  // A command that does not declare a valid scope is refused (fail closed) instead of being open to everyone.
+  if (!SCOPES.includes(req.scope)) return { ok: false, message: MSG.ownerOnly };
 
   if (req.scope === "GROUP" && !group) return { ok: false, message: MSG.groupOnly };
   if (req.scope === "PRIVATE" && group) return { ok: false, message: MSG.privateOnly };

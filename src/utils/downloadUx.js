@@ -37,7 +37,8 @@ async function runDownload(sock, m, o) {
   }
 }
 
-const readFile = (p) => fs.readFileSync(p);
+// Streamed from disk by Baileys (not loaded into memory): { url: <local path> } — several big downloads can no longer exhaust RAM.
+const readFile = (p) => ({ url: p });
 
 /** WhatsApp wants the right mimetype for the file it is really getting. */
 const AUDIO_MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", mp4: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg; codecs=opus", opus: "audio/ogg; codecs=opus", webm: "audio/webm", wav: "audio/wav" };

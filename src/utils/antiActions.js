@@ -84,6 +84,7 @@ async function enforce(sock, { chat, sender, m, feature, settings, saveSettings,
     const k = chat + ":" + feature;
     if (Date.now() - (noticeSeen.get(k) || 0) > NOTICE_EVERY_MS) {
       noticeSeen.set(k, Date.now());
+      while (noticeSeen.size > 2000) noticeSeen.delete(noticeSeen.keys().next().value);
       await sock.sendMessage(chat, { text: `${MSG.botNotAdmin}\n(${f.rule} is on, but I can't enforce it.)` }).catch(() => {});
     }
     return { handled: false, reason: "bot-not-admin" };
