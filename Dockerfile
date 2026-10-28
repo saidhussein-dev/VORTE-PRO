@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Install deps first for better layer caching
 COPY package*.json ./
+COPY patches ./patches
 RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY . .
