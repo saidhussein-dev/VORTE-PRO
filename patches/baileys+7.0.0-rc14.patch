@@ -1,0 +1,14 @@
+diff --git a/node_modules/baileys/lib/Socket/messages-send.js b/node_modules/baileys/lib/Socket/messages-send.js
+index d61e064..3af5bc9 100644
+--- a/node_modules/baileys/lib/Socket/messages-send.js
++++ b/node_modules/baileys/lib/Socket/messages-send.js
+@@ -466,7 +466,8 @@ export const makeMessagesSocket = (config) => {
+             });
+         }
+         await authState.keys.transaction(async () => {
+-            const mediaType = getMediaType(message);
++            // vorte-patch: wrapped media (group status) must still carry its `mediatype`, like the official client sends
++            const mediaType = getMediaType(message) || getMediaType(normalizeMessageContent(message) || {});
+             if (mediaType) {
+                 extraAttrs['mediatype'] = mediaType;
+             }
