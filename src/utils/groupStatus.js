@@ -20,6 +20,16 @@ const baileys = require("baileys");
 const { ensureFfmpeg } = require("../services/downloaders/ffmpegCheck");
 const { ffmpegConvert, DIR } = require("./convertMedia");
 
+/** True when the Baileys patch (patches/baileys+*.patch, applied on `npm install`) is present: it adds the `mediatype` attribute group-status media needs. */
+function baileysPatched() {
+  try {
+    const dir = path.dirname(require.resolve("baileys"));
+    const file = [path.join(dir, "Socket", "messages-send.js"), path.join(dir, "..", "lib", "Socket", "messages-send.js")].find((f) => fs.existsSync(f));
+    return !!file && fs.readFileSync(file, "utf8").includes("vorte-patch");
+  } catch { return true; /* cannot tell — do not nag */ }
+}
+let warned = false;
+
 const FIELD = () => (String(process.env.GROUP_STATUS_FIELD || "").toLowerCase() === "v1" ? "groupStatusMessage" : "groupStatusMessageV2");
 
 const run = (file, args, timeout = 30000) => new Promise((resolve, reject) => execFile(file, args, { timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => (err ? reject(err) : resolve(String(stdout)))));
@@ -73,6 +83,7 @@ async function withMediaMetadata(content) {
  */
 async function sendGroupStatus(sock, groupJid, content, options = {}) {
   if (!groupJid || !groupJid.endsWith("@g.us")) throw new Error("A group status can only be posted in a group.");
+  if (!warned && !baileysPatched()) { warned = true; console.warn("⚠️ The Baileys patch is not applied (run `npm install` so patch-package can apply patches/). Group-status photos, videos and voice notes may not show up."); }
   const prepared = await withMediaMetadata(content);
   const inner = await baileys.generateWAMessageContent(prepared, {
     upload: sock.waUploadToServer,
@@ -89,4 +100,4 @@ async function sendGroupStatus(sock, groupJid, content, options = {}) {
   return { messageId, field };
 }
 
-module.exports = { sendGroupStatus, FIELD, withMediaMetadata, probeMedia, thumbnailOf };
+module.exports = { baileysPatched, sendGroupStatus, FIELD, withMediaMetadata, probeMedia, thumbnailOf };
