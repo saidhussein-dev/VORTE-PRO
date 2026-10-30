@@ -27,14 +27,14 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
   await handler.handle(s, privateMsg(".menu"), ".menu", st.getSettings, st.saveSettings);
   check("one interactive message is sent", sentInteractive.length === 1, sentInteractive.length);
   const msg = (sentInteractive[0]?.content?.interactiveMessage || sentInteractive[0]?.content?.viewOnceMessage?.message?.interactiveMessage);
-  const HEADER_LINES = ["Owner   :", "Owner no:", "Bot no. :", "Prefix  :", "Version :", "Mode    :", "Plugins :", "Speed   :", "Usage   :", "Ram     :"];
-  check("the ORIGINAL header box with the bot name opens the body (no separate title)", !msg?.header && /^╔═+╗\n║\s+🤖 VORTE PRO\s+║\n╚═+╝/.test(msg?.body?.text), msg?.body?.text?.slice(0, 80));
+  const HEADER_LINES = ["Owner   :", "Owner no:", "Bot no. :", "Prefix  :", "Version :", "Mode    :", "Plugins :", "Speed   :", "Usage   :", "RAM     :"];
+  check("the header box with the bot name opens the body (no separate title)", !msg?.header && /^┌─+〔 VORTE PRO 〕─+┐/.test(msg?.body?.text), msg?.body?.text?.slice(0, 80));
   check("body has every original info line (Owner ... Ram)", HEADER_LINES.every((l) => (msg?.body?.text || "").includes(l)) && /Plugins : \d+/.test(msg?.body?.text), msg?.body?.text);
   const btns = msg?.nativeFlowMessage?.buttons || [];
   const parsed = btns.map((b) => ({ name: b.name, ...JSON.parse(b.buttonParamsJson) }));
   const label = (b) => b.display_text || b.title;
-  check("buttons: Channel, GitHub, Contact Owner, Download, Group, Owner Commands, More Categories", JSON.stringify(parsed.map(label)) === JSON.stringify(["WhatsApp Channel", "GitHub Repository", "Contact Owner", "Download Commands", "Group Commands", "Owner Commands", "More Categories"]), parsed.map(label));
-  const chan = parsed.find((b) => b.display_text === "WhatsApp Channel"), gh = parsed.find((b) => b.display_text === "GitHub Repository");
+  check("buttons: Channel, GitHub, Contact Owner, Download, Group, Owner Commands, More Categories", JSON.stringify(parsed.map(label)) === JSON.stringify(["View Channel", "GitHub Repository", "Contact Owner", "Download Commands", "Group Commands", "Owner Commands", "More Categories"]), parsed.map(label));
+  const chan = parsed.find((b) => b.display_text === "View Channel"), gh = parsed.find((b) => b.display_text === "GitHub Repository");
   check("Channel button opens the configured channel URL", chan?.name === "cta_url" && chan.url === "https://whatsapp.com/channel/0029VbBqa4HHbFVBar2vwO3H" && chan.url === config.channel.url, chan);
   check("GitHub button opens the repository", gh?.name === "cta_url" && gh.url === "https://github.com/saidhussein-dev/VORTE-PRO", gh);
   check("no emoji in the footer or any button (only the original header box has its robot)", !EMOJI.test(JSON.stringify([msg?.nativeFlowMessage, msg?.footer])), JSON.stringify([msg?.nativeFlowMessage, msg?.footer]).match(EMOJI));
@@ -108,7 +108,7 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
   im.deps.prepareMedia = async (sock, media) => { prepared.push(media); return media.kind === "video" ? { videoMessage: { url: "u", mimetype: "video/mp4", gifPlayback: !!media.gifPlayback } } : { imageMessage: { url: "u", mimetype: "image/jpeg" } }; };
   const withUpload = () => { const x = makeSock(); x.waUploadToServer = async () => ({}); return x; };
   const buttonsOf = (c) => ((c?.interactiveMessage || c?.viewOnceMessage?.message?.interactiveMessage)?.nativeFlowMessage?.buttons || []).map((b) => JSON.parse(b.buttonParamsJson).display_text || JSON.parse(b.buttonParamsJson).title);
-  const MAIN = JSON.stringify(["WhatsApp Channel", "GitHub Repository", "Contact Owner", "Download Commands", "Group Commands", "Owner Commands", "More Categories"]);
+  const MAIN = JSON.stringify(["View Channel", "GitHub Repository", "Contact Owner", "Download Commands", "Group Commands", "Owner Commands", "More Categories"]);
   const cases = [
     ["style 2 (picture, default URL)", { style: 2 }, "image", "imageMessage"],
     ["style 3 (video, default URL)", { style: 3 }, "video", "videoMessage"],
@@ -122,7 +122,7 @@ const allTexts = (s) => s.sent.map((x) => x.content?.text || x.content?.caption 
     const c = sentInteractive[nBefore]?.content; const im2 = c?.interactiveMessage || c?.viewOnceMessage?.message?.interactiveMessage;
     check(`${name}: one button message with the ${kind} in the header`, sentInteractive.length === nBefore + 1 && im2?.header?.hasMediaAttachment === true && !!im2.header[field], im2?.header);
     check(`${name}: same seven buttons as the default menu`, JSON.stringify(buttonsOf(c)) === MAIN, buttonsOf(c));
-    check(`${name}: the original header box opens the body, no emoji in footer/buttons`, /^╔═+╗\n║\s+🤖 VORTE PRO\s+║/.test(im2?.body?.text) && HEADER_LINES.every((l) => im2.body.text.includes(l)) && !EMOJI.test(JSON.stringify([im2.nativeFlowMessage, im2.footer])), im2?.body?.text);
+    check(`${name}: the header box opens the body, no emoji in footer/buttons`, /^┌─+〔 VORTE PRO 〕─+┐/.test(im2?.body?.text) && HEADER_LINES.every((l) => im2.body.text.includes(l)) && !EMOJI.test(JSON.stringify([im2.nativeFlowMessage, im2.footer])), im2?.body?.text);
     check(`${name}: nothing else is sent when the buttons went out`, s.sent.length === 0, allTexts(s));
   }
   check("the saved media (not a stand-in) is what gets uploaded", prepared[0]?.source?.url && prepared[2]?.source?.url === "https://example.com/x.jpg" && prepared[3]?.kind === "video" && prepared[1]?.gifPlayback === true, prepared.map((x) => [x.kind, x.source?.url]));

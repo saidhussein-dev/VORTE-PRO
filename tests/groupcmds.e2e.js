@@ -114,11 +114,14 @@ const isAdmin = (s, n, lid = true) => !!s.state.participants.find((p) => p.id ==
     s = mk({ participants: [...people({ lid: true }).filter((p) => p.admin), ...big] }); await run(s, msg(2, ".tagall"));
     check("400 members -> split into several messages, all tagged", s.sent.length === 3 && s.sent.reduce((n, x) => n + x.content.mentions.length, 0) === 403, s.sent.map((x) => x.content.mentions.length));
     s = mk(); await run(s, msg(2, ".hidetag Quiet ping"));
-    check("hidetag: text without @tags, everyone mentioned", s.sent[0].content.text === "Quiet ping" && s.sent[0].content.mentions.length === 6);
+    check("hidetag: the .hidetag command message is deleted", s.sent.some((x) => x.content.delete));
+    const ht = s.sent.find((x) => x.content.mentions);
+    check("hidetag: text without @tags, everyone mentioned", ht?.content.text === "Quiet ping" && ht.content.mentions.length === 6);
     s = mk(); await run(s, msg(2, ".hidetag"));
     check("hidetag with nothing to send -> usage", /Usage: \.hidetag/.test(lastText(s)) && s.sent.length === 1);
     s = mk(); await run(s, msg(2, ".hidetag", { replyTo: J(3) }));
-    check("hidetag replying to a text re-sends that text to everyone", s.sent[0].content.text === "quoted text" && s.sent[0].content.mentions.length === 6);
+    const ht2 = s.sent.find((x) => x.content.mentions);
+    check("hidetag replying to a text re-sends that text to everyone", ht2?.content.text === "quoted text" && ht2.content.mentions.length === 6);
     s = mk(); await run(s, msg(2, ".tagadmins Help!"));
     check("tagadmins mentions only the admins (3)", s.sent[0].content.mentions.length === 3, s.sent[0].content.mentions);
     s = mk(); await run(s, msg(3, ".listadmins"));
