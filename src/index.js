@@ -10,6 +10,10 @@ const { handleGroupUpdate } = require('./bot/events/groupHandler');
 const { handleMessageUpdate } = require('./bot/events/editHandler');
 const { handleCall } = require('./bot/events/callHandler');
 
+// A crash-proof process: one rejected promise or stray exception must never take the whole bot down.
+process.on('unhandledRejection', (reason) => console.error('⚠️ Unhandled rejection:', reason));
+process.on('uncaughtException', (err) => console.error('⚠️ Uncaught exception:', err));
+
 async function main() {
   console.log('🚀 Starting VORTE PRO WhatsApp Bot (Modular Implementation)...');
 
@@ -26,8 +30,34 @@ async function main() {
   }
 
   // 2. Settings management functions
-  const getSettings = () => JSON.parse(fs.readFileSync(config.settingsPath));
-  const saveSettings = (data) => fs.writeFileSync(config.settingsPath, JSON.stringify(data, null, 2));
+  // Cached text + ATOMIC writes (temp file, then rename): a kill in the middle of a save can never leave half a file,
+  // and the file is not re-read from disk on every message. A .bak of the last good copy is kept as a safety net.
+  const bakPath = config.settingsPath + '.bak';
+  let raw = null;        // text currently in memory
+  let lastGood = null;   // last text that parsed correctly
+  let lastWrite = 0;
+  const getSettings = () => {
+    try {
+      if (raw === null) raw = fs.readFileSync(config.settingsPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      lastGood = raw;
+      return parsed;
+    } catch (e) {
+      console.error('⚠️ settings.json is unreadable (' + e.message + ') — falling back to the last good copy.');
+      raw = null;
+      try { const b = fs.readFileSync(bakPath, 'utf8'); const parsed = JSON.parse(b); raw = b; return parsed; } catch { raw = '{}'; return {}; }
+    }
+  };
+  const saveSettings = (data) => {
+    const text = JSON.stringify(data, null, 2);
+    const tmp = config.settingsPath + '.tmp';
+    if (lastGood) { try { fs.writeFileSync(bakPath, lastGood); } catch { /* backup is best effort */ } }
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, config.settingsPath);
+    raw = text; lastGood = text; lastWrite = Date.now();
+  };
+  // If someone edits storage/settings.json by hand (panel file manager), pick the change up without a restart.
+  try { fs.watchFile(config.settingsPath, { interval: 5000, persistent: false }, () => { if (Date.now() - lastWrite > 6000) raw = null; }); } catch { /* optional */ }
 
   // 2b. Upgrade stored settings to the scoped formats (idempotent)
   try {
@@ -37,6 +67,14 @@ async function main() {
       console.log('📦 Settings upgraded to the scoped automation/antidelete format');
     }
   } catch (e) { console.error('⚠️ Settings migration skipped:', e.message); }
+
+  // 2c. One stats line a minute (kept short) so a crash can be diagnosed from the last log lines.
+  if (process.env.BOT_STATS_LOG !== 'false') {
+    setInterval(() => {
+      const m = process.memoryUsage();
+      console.log(`[stats] rss=${(m.rss / 1e6) | 0}MB heap=${(m.heapUsed / 1e6) | 0}MB ext=${(m.external / 1e6) | 0}MB up=${process.uptime() | 0}s`);
+    }, 60000).unref();
+  }
 
   // 3. Setup Web Server
   const { pairingState } = setupServer();
