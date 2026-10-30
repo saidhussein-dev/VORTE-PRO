@@ -1,5 +1,6 @@
 // src/commands/dltest.js — one message that tells you WHY a download fails (owner only).
-//   .dltest            -> yt-dlp / ffmpeg / cookies status
+//   .dltest            -> yt-dlp / ffmpeg / cookies / JavaScript runtime status
+//   .dltest update     -> update yt-dlp right now (it also updates itself daily)
 //   .dltest <link>     -> the same + what formats the link offers and which one would be used
 const runner = require("../services/downloaders/ytdlpRunner");
 const ytdlp = require("../services/downloaders/ytdlp");
@@ -19,6 +20,14 @@ module.exports = {
     const url = (args[0] || "").trim();
     const lines = [];
 
+    if (url.toLowerCase() === "update") {
+      const before = await runner.version().catch(() => null);
+      const r = await runner.updateNow({ force: true });
+      return sock.sendMessage(chat, { text: panel(TITLE, [
+        r.updated ? `✅ yt-dlp updated: ${r.from || before || "?"} → ${r.to || "latest"}` : r.error ? `❌ Update failed: ${r.error}` : `ℹ️ ${r.reason || "No update was needed"}${r.from ? ` (${r.from})` : ""}`
+      ]) });
+    }
+
     const ver = await runner.version().catch(() => null);
     lines.push(`yt-dlp: ${ver ? "✅ " + ver : "❌ not available (couldn't download it — check the host's internet access)"}`);
 
@@ -30,7 +39,10 @@ module.exports = {
     lines.push(!ck ? "cookies: — none (put cookies.json next to index.js if YouTube/Instagram ask you to sign in)"
       : ck.error ? `cookies: ❌ ${ck.file} could not be read`
       : `cookies: ✅ ${require("path").basename(ck.file)} · ${ck.count} cookies · ${ck.domains.slice(0, 4).join(", ")}${ck.login ? "" : " · ⚠️ no login cookie (export again while logged in)"}`);
-    lines.push(`proxy: ${process.env.YTDLP_PROXY ? "set" : "none"} · js runtime: node ${process.version}`);
+    const h = runner.health();
+    lines.push(`js runtime: ${h.jsRuntime ? (h.nodeOk ? "✅ node " + h.node : `❌ node ${h.node} is too old — YouTube needs Node 22+`) : "off (YTDLP_JS_RUNTIME=off)"}`);
+    lines.push(`network: ${h.ipv4 ? "IPv4 forced" : "IPv4+IPv6"} · proxy: ${process.env.YTDLP_PROXY ? "set" : "none"}`);
+    lines.push(`updates: ${h.managed ? "yt-dlp updates itself daily (.dltest update = now)" : "yt-dlp is provided by the host — update it there"}`);
 
     if (!url) {
       lines.push("", "Send  .dltest <link>  to see what a link offers.");
