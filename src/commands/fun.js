@@ -81,7 +81,7 @@ module.exports = {
           "💀 Hack complete!"
         ];
         let i = 0;
-        let msg = await sock.sendMessage(chat, { text: steps[0] });
+        let msg = await sock.sendMessage(chat, { text: steps[0] }, { channelButton: false }); // edited below, so no button
         let interval = setInterval(async () => {
           i++;
           if (i >= steps.length) return clearInterval(interval);

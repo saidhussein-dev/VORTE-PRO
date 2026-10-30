@@ -68,7 +68,7 @@ module.exports = {
 ┌───────〔 ${botName} 〕───────┐
 |
 | ➤ Owner   : 𝔇𝔢𝔞𝔱𝔥𝔰𝔱𝔯𝔬𝔨𝔢
-| ➤ Owner no: ${botInfo.ownerPhones(sock).join(" · ") || "not set"}\n
+| ➤ Owner no: ${botInfo.ownerPhones(sock).join(" · ") || "not set"}
 | ➤ Bot no. : ${botInfo.botPhone(sock)}
 | ➤ Prefix  : ${prefixLine}
 | ➤ Version : ${version}

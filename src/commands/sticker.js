@@ -2,6 +2,7 @@
 // WhatsApp only accepts a sticker as a 512x512 WebP. The old version sent the original photo/video bytes as the
 // "sticker", which WhatsApp shows as an invalid sticker. The media is now converted with ffmpeg first.
 const { ffmpegConvert } = require("../utils/convertMedia");
+const { addPackInfo } = require("../utils/stickerMeta");
 
 const SIZE = 512;
 // Fit inside 512x512 and pad the rest with transparency, so nothing is stretched or cropped.
@@ -70,8 +71,10 @@ module.exports = {
       const buffer = await deps.download(media, type);
       if (!buffer?.length) return sock.sendMessage(chat, { text: "❌ I couldn't download that media. Send it again." });
 
-      const sticker = await toStickerWebp(buffer, type, media.mimetype);
-      await sock.sendMessage(chat, { sticker });
+      let sticker = await toStickerWebp(buffer, type, media.mimetype);
+      // Write "VORTE PRO" into the sticker as its pack name / author, like other sticker makers do.
+      try { sticker = await addPackInfo(sticker); } catch (e) { console.error("sticker pack info could not be added:", e.message); }
+      await sock.sendMessage(chat, { sticker }); // stickers never carry the channel button
     } catch (err) {
       console.error(err);
       await sock.sendMessage(chat, { text: err.code === "NO_FFMPEG" ? "❌ Stickers need ffmpeg, which isn't available on this host (send .dltest to check)." : "❌ Failed to create sticker." });

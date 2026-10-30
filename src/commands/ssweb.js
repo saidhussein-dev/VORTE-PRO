@@ -97,7 +97,7 @@ module.exports = {
     const parsed = normalizeUrl(link);
     if (parsed.error) return sock.sendMessage(chat, { text: panel(TITLE, [`❌ ${parsed.error}`]) });
 
-    const s = await status(sock, chat, panel(TITLE, [`🌐 ${new URL(parsed.url).hostname}`, "📸 Taking the screenshot..."]), { quoted: m });
+    const s = await status(sock, chat, panel(TITLE, [`🌐 ${new URL(parsed.url).hostname}`, "📸 Taking the screenshot..."]), { quoted: m, buttonOnFinish: false }); // the screenshot carries the channel button
     try {
       const { buffer, via } = await capture(parsed.url, mode);
       await sock.sendMessage(chat, { image: buffer, caption: `🌐 ${parsed.url}\n📱 ${mode === "desktop" ? "Desktop view" : mode === "mobile" ? "Mobile view" : "Full page"} • ${via}` }, { quoted: m });
