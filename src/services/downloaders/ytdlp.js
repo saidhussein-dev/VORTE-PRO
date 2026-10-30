@@ -37,12 +37,26 @@ function parsePrinted(stdout) {
   return null;
 }
 
+/** What to do about YouTube's bot check, based on how THIS host is set up (so the message says the thing that is actually wrong). */
+function botCheckMessage() {
+  const h = runner.health();
+  const parts = ["YouTube is blocking this server (bot check)."];
+  if (!h.nodeOk) parts.push(`This bot runs on Node ${h.node} but yt-dlp needs Node 22+ for YouTube — raise the host's Node version.`);
+  if (!h.cookies) parts.push("No cookies are set: export YouTube cookies (from a private window) to cookies.json next to index.js.");
+  else if (h.cookies.error) parts.push("The cookies file could not be read.");
+  else if (!h.cookies.login) parts.push("The cookies file has no login cookie — export it again while logged in.");
+  else parts.push("The cookies are probably expired or flagged — export fresh ones from a private window (log in, open youtube.com/robots.txt, export, close the window).");
+  return parts.join(" ");
+}
+
 /** Convert a raw yt-dlp/execa failure into a short, honest, user-facing reason. */
 function classifyError(err) {
   const msg = String(err?.stderr || err?.message || err || "").toLowerCase();
   if (err?.code === "NEEDS_FFMPEG") return err.message;
   if (err?.timedOut) return "Download timed out.";
-  if (msg.includes("confirm you're not a bot") || msg.includes("confirm you\u2019re not a bot") || msg.includes("sign in to confirm")) return "YouTube is blocking this server (bot check). The host needs cookies — see .env.example (YTDLP_COOKIES).";
+  if (/no supported javascript runtime|javascript runtime could not be found|js runtime/.test(msg)) return `yt-dlp has no JavaScript runtime to use for YouTube. It needs Node ${22}+ (this bot runs ${process.version}).`;
+  if (msg.includes("confirm you're not a bot") || msg.includes("confirm you\u2019re not a bot") || msg.includes("sign in to confirm")) return botCheckMessage();
+  if (/n challenge|nsig|signature solving|challenge solving|player js/.test(msg)) return "yt-dlp couldn't solve YouTube's current challenge. It updates itself daily — try again later, or send .dltest update.";
   if (msg.includes("instagram") && (msg.includes("login required") || msg.includes("rate-limit") || msg.includes("empty media response") || msg.includes("not available"))) return "Instagram needs a login for this post. Add instagram.com cookies (see .env.example), or try a public post.";
   if (msg.includes("tiktok") && (msg.includes("ip address is blocked") || msg.includes("unable to extract") || msg.includes("not available"))) return "TikTok didn't give this server the video (it may be blocking the host's IP, or the video is private/removed).";
   if (msg.includes("http error 429") || msg.includes("too many requests")) return "The source is rate-limiting this server. Try again later.";
@@ -65,7 +79,8 @@ const formatNotAvailable = (err) => /requested format is not available/i.test(St
  * @param {{ timeoutMs?: number }} [opts]
  * @returns {Promise<object>} the metadata only (skipDownload) — used for search/info
  */
-async function getInfo(url, opts = {}) {
+const getInfo = (url, opts) => withUpdateRetry(() => getInfoOnce(url, opts));
+async function getInfoOnce(url, opts = {}) {
   if (!(await ensureBinary())) throw new Error("yt-dlp is not available on this host.");
   try {
     return await runner.json(url, {
@@ -87,7 +102,8 @@ async function getInfo(url, opts = {}) {
  * @param {string} query
  * @param {number} [limit]
  */
-async function search(query, limit = 5) {
+const search = (query, limit) => withUpdateRetry(() => searchOnce(query, limit));
+async function searchOnce(query, limit = 5) {
   if (!(await ensureBinary())) throw new Error("yt-dlp is not available on this host.");
   try {
     const result = await runner.json(`ytsearch${limit}:${query}`, {
@@ -110,24 +126,65 @@ async function search(query, limit = 5) {
   }
 }
 
+const isYouTube = (url) => /(^|\/\/|\.)(youtu\.be|youtube\.com|music\.youtube\.com)\b|^ytsearch/i.test(String(url));
+const botCheck = (err) => /sign in to confirm|not a bot/i.test(String(err?.stderr || err?.message || ""));
+
 /**
- * Try each attempt (a set of yt-dlp flags) in turn. Only "requested format is not available" moves on to
- * the next one; any other failure (bot check, timeout, private...) is final and reported as it is.
+ * YouTube serves different "clients" (web, TV, mobile...) and applies its bot check to each differently, so a video that is
+ * refused for one often works for another. These are tried in order, ONLY after the previous one was refused.
+ * YTDLP_YT_CLIENTS="player_client=a,b;player_client=c" overrides the list; YTDLP_EXTRACTOR_ARGS pins one choice and disables this.
+ */
+function clientVariants(url, env = process.env) {
+  if (!isYouTube(url) || env.YTDLP_EXTRACTOR_ARGS) return [{}];
+  const list = env.YTDLP_YT_CLIENTS
+    ? String(env.YTDLP_YT_CLIENTS).split(";").map((s) => s.trim()).filter(Boolean)
+    : ["", "player_client=tv,web_safari", "player_client=android_vr", "player_client=mweb"];
+  return list.map((a) => (a ? { extractorArgs: `youtube:${a}` } : {}));
+}
+
+/** Worth trying another YouTube client for? (the bot check and "no format" are client-specific; a private video is not) */
+const clientRetryable = (err) => botCheck(err) || formatNotAvailable(err) || /unable to extract|only images are available|http error 403/i.test(String(err?.stderr || err?.message || ""));
+
+/**
+ * Try each attempt (a set of yt-dlp flags) in turn. "Requested format is not available" moves on to the next format set;
+ * for YouTube, a bot check / no-format after all of them moves on to the next client. Any other failure (private, timeout...)
+ * is final and reported as it is.
  */
 async function runAttempts(url, common, attempts, base, deadline) {
+  const variants = clientVariants(url);
   let last;
-  for (let i = 0; i < attempts.length; i++) {
-    const left = deadline - Date.now();
-    if (left < 3000) break;
-    try {
-      return await runner.exec(url, { ...common, ...attempts[i] }, { timeout: left });
-    } catch (err) {
-      last = err;
-      removeFamily(base);                       // partial files of the failed attempt
-      if (!formatNotAvailable(err) || i === attempts.length - 1) throw err;
+  for (let v = 0; v < variants.length; v++) {
+    let nextClient = false;
+    for (let i = 0; i < attempts.length; i++) {
+      const left = deadline - Date.now();
+      if (left < 3000) break;
+      try {
+        return await runner.exec(url, { ...common, ...variants[v], ...attempts[i] }, { timeout: left });
+      } catch (err) {
+        last = err;
+        removeFamily(base);                       // partial files of the failed attempt
+        if (formatNotAvailable(err) && i < attempts.length - 1) continue;      // next format set, same client
+        if (v < variants.length - 1 && clientRetryable(err)) { nextClient = true; break; } // next client
+        throw err;
+      }
     }
+    if (!nextClient) break;
   }
   throw last || Object.assign(new Error("timed out"), { timedOut: true });
+}
+
+/** yt-dlp breaks whenever a site changes; the cure is almost always a newer yt-dlp. On such a failure, update (at most every 30 min) and try once more. */
+const healable = (err) => botCheck(err) || /unable to extract|n challenge|nsig|signature|only images are available|requested format is not available|http error 403|no supported javascript runtime/i.test(String(err?.stderr || err?.message || ""));
+async function withUpdateRetry(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    const cause = err?.cause || err;
+    if (!healable(cause) && !healable(err)) throw err;
+    const r = await runner.updateNow({ minAgeMs: 30 * 60 * 1000 });
+    if (!r.updated) throw err;
+    return fn();
+  }
 }
 
 /** Turn what yt-dlp printed / left on disk into the result object. */
@@ -158,7 +215,8 @@ const NEEDS_FFMPEG_MSG = "This source serves picture and sound as separate strea
  * @param {{ maxHeight?: number, timeoutMs?: number, maxFilesizeMB?: number }} [opts]
  * @returns {Promise<{ filePath: string, title: string, sizeBytes: number, format: string }>}
  */
-async function downloadVideo(url, opts = {}) {
+const downloadVideo = (url, opts) => withUpdateRetry(() => downloadVideoOnce(url, opts));
+async function downloadVideoOnce(url, opts = {}) {
   if (!(await ensureBinary())) throw new Error("yt-dlp is not available on this host.");
   // TikTok (opts.platform === "tiktok"): the best resolution the source has (no 480p cap) and NEVER the format TikTok
   // labels "download", which is the one with the watermark burned in. If the source offers nothing else, the last
@@ -209,7 +267,8 @@ async function downloadVideo(url, opts = {}) {
  * @param {{ timeoutMs?: number, maxFilesizeMB?: number }} [opts]
  * @returns {Promise<{ filePath: string, title: string, sizeBytes: number, format: string }>}
  */
-async function downloadAudio(url, opts = {}) {
+const downloadAudio = (url, opts) => withUpdateRetry(() => downloadAudioOnce(url, opts));
+async function downloadAudioOnce(url, opts = {}) {
   if (!(await ensureBinary())) throw new Error("yt-dlp is not available on this host.");
   const ff = await ensureFfmpeg();
   const base = newBase();
@@ -246,4 +305,4 @@ function cleanup(filePath) {
   }
 }
 
-module.exports = { ensureBinary, getInfo, search, downloadVideo, downloadAudio, cleanup, classifyError, TMP_DIR };
+module.exports = { ensureBinary, getInfo, search, downloadVideo, downloadAudio, cleanup, classifyError, clientVariants, TMP_DIR };

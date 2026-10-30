@@ -21,6 +21,21 @@ const FETCH_TIMEOUT_MS = 30000;
 const MAX_REDIRECTS = 5;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 const RELEASE_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/";
+const LATEST_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest";
+
+// yt-dlp needs a JavaScript runtime to talk to YouTube, and its YouTube support now requires Node 22 or newer.
+const NODE_MAJOR = Number(String(process.versions.node).split(".")[0]);
+const MIN_NODE_FOR_YOUTUBE = 22;
+const UPDATE_EVERY_MS = (Number(process.env.YTDLP_UPDATE_HOURS) || 24) * 3600 * 1000;
+
+/** yt-dlp release a dated version string ("2025.11.12") compared as numbers. */
+const versionAtLeast = (v, min) => {
+  if (!v) return true; // unknown version: assume new enough
+  const a = String(v).split(".").map(Number), b = String(min).split(".").map(Number);
+  if (a.some(Number.isNaN)) return true;
+  for (let i = 0; i < b.length; i++) { if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; }
+  return true;
+};
 
 function standaloneAsset() {
   const { platform, arch } = process;
@@ -70,6 +85,24 @@ function download(url, dest, redirectsLeft = MAX_REDIRECTS) {
   });
 }
 
+/** The newest yt-dlp release tag (e.g. "2026.10.12"), read from GitHub's /releases/latest redirect. null when unreachable. */
+function latestTag() {
+  return new Promise((resolve) => {
+    const req = https.request(LATEST_URL, { method: "HEAD", headers: { "User-Agent": "vorte-pro" } }, (res) => {
+      res.resume();
+      const loc = String(res.headers.location || "");
+      const tag = loc.split("/tag/")[1];
+      resolve(tag ? decodeURIComponent(tag).trim() : null);
+    });
+    req.setTimeout(FETCH_TIMEOUT_MS, () => req.destroy());
+    req.on("error", () => resolve(null));
+    req.end();
+  });
+}
+
+// Tests replace these; production uses the real network.
+const deps = { latestTag, download, managedPath: null };
+
 let resolved = null;      // cached command once found
 let pending = null;       // in-flight resolution (avoids parallel downloads)
 
@@ -86,10 +119,12 @@ function ensureBinary() {
       const dest = localBinPath();
       if (!isExecutable(dest) || !(await probe(dest))) {
         console.log(`⬇️  Downloading yt-dlp (${asset})...`);
-        await download(RELEASE_BASE + asset, dest);
+        await deps.download(RELEASE_BASE + asset, dest);
         if (!(await probe(dest))) throw new Error("Downloaded yt-dlp does not run on this host");
         console.log("✅ yt-dlp ready");
       }
+      deps.managedPath = dest;      // our own copy: kept up to date automatically (see updateNow)
+      startUpkeep();
       return (resolved = dest);
     } catch (err) {
       console.error("❌ yt-dlp binary install failed:", err.message);
@@ -182,6 +217,35 @@ function logCookieSummary(file, netscapePath) {
   }
 }
 
+let versionTried = false;
+let binVersion = null;     // yt-dlp's own version once known (a very old build must not be given flags it does not know)
+let warnedNode = false;
+
+const debugOn = () => /^(1|true|on|yes)$/i.test(String(process.env.YTDLP_DEBUG || ""));
+
+/**
+ * --js-runtimes value. By default THIS bot's own node (by full path, so it never depends on PATH).
+ * YTDLP_JS_RUNTIME: "off" | "deno" | "node" | "node:/path/to/node" | "quickjs" ...
+ */
+function jsRuntimeFlag() {
+  const v = String(process.env.YTDLP_JS_RUNTIME || "").trim();
+  if (v.toLowerCase() === "off") return null;
+  if (v && v !== "node") return v;
+  if (NODE_MAJOR < MIN_NODE_FOR_YOUTUBE && !warnedNode) {
+    warnedNode = true;
+    console.error(`⚠️ This bot runs on Node ${process.version}, but yt-dlp's YouTube support needs Node ${MIN_NODE_FOR_YOUTUBE}+ as its JavaScript runtime. YouTube downloads will fail until the host's Node version is raised to ${MIN_NODE_FOR_YOUTUBE} or newer (TikTok/Instagram are not affected).`);
+  }
+  return `node:${process.execPath}`;
+}
+
+/** The official yt-dlp executables carry the YouTube challenge solver; any other yt-dlp may need to fetch it. */
+function remoteComponentsFlag() {
+  const v = String(process.env.YTDLP_REMOTE_COMPONENTS || "").trim();
+  if (v.toLowerCase() === "off") return null;
+  if (v) return v;
+  return resolved && deps.managedPath && resolved === deps.managedPath ? null : "ejs:github";
+}
+
 /** Host-level options from env, applied to every call (see .env.example). */
 let warnedCookies = false;
 function globalFlags() {
@@ -190,8 +254,13 @@ function globalFlags() {
   if (cookies) { const c = prepareCookies(cookies); if (c) { f.cookies = c; logCookieSummary(cookies, c); } }
   else if (process.env.YTDLP_COOKIES && !warnedCookies) { warnedCookies = true; console.error(`⚠️ YTDLP_COOKIES is set to "${process.env.YTDLP_COOKIES}" but that file does not exist — downloads will run without cookies.`); }
   if (process.env.YTDLP_PROXY) f.proxy = process.env.YTDLP_PROXY;
-  const js = process.env.YTDLP_JS_RUNTIME || "node";       // YouTube extraction needs a JS runtime; "off" disables
-  if (js !== "off") f.jsRuntimes = js;
+  const js = jsRuntimeFlag();
+  if (js && versionAtLeast(binVersion, "2025.11.12")) f.jsRuntimes = js;
+  // IPv6 ranges of hosting providers are the first thing YouTube flags: talk to it over IPv4 (YTDLP_IPV4=false to turn off)
+  if (String(process.env.YTDLP_IPV4 || "").toLowerCase() !== "false") f.forceIpv4 = true;
+  const rc = remoteComponentsFlag();
+  if (rc && versionAtLeast(binVersion, "2025.11.12")) f.remoteComponents = rc;
+  if (debugOn()) f.verbose = true;
   const ffLoc = require("./ffmpegCheck").location();       // bundled ffmpeg + ffprobe folder (null when the host has its own)
   if (ffLoc) f.ffmpegLocation = ffLoc;
   if (process.env.YTDLP_EXTRACTOR_ARGS) f.extractorArgs = process.env.YTDLP_EXTRACTOR_ARGS; // e.g. "youtube:player_client=mweb"
@@ -201,8 +270,11 @@ function globalFlags() {
 async function exec(url, flags = {}, { timeout = 120000 } = {}) {
   const cmd = await ensureBinary();
   if (!cmd) throw new Error("yt-dlp is not available on this host.");
+  if (!binVersion && !versionTried) { versionTried = true; await version(); }
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, [...buildArgs({ ...globalFlags(), ...flags }), "--", String(url)], { stdio: ["ignore", "pipe", "pipe"] });
+    const merged = { ...globalFlags(), ...flags };
+    if (debugOn()) merged.noWarnings = false; // YTDLP_DEBUG=true: show yt-dlp's warnings too (e.g. a missing JavaScript runtime)
+    const child = spawn(cmd, [...buildArgs(merged), "--", String(url)], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "", timedOut = false, overflow = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeout);
     child.stdout.on("data", (d) => {
@@ -221,7 +293,7 @@ async function exec(url, flags = {}, { timeout = 120000 } = {}) {
       if (code === 0 && !timedOut && !overflow) return resolve(out);
       const e = new Error(timedOut ? "yt-dlp timed out" : overflow ? "yt-dlp output too large" : (err.trim().split("\n").pop() || `yt-dlp exited with code ${code}`));
       e.stderr = err; e.exitCode = code; e.timedOut = timedOut;
-      if (!timedOut) console.error(`❌ [yt-dlp] exit ${code} for ${String(url).slice(0, 80)}:\n${err.trim().split("\n").slice(-6).join("\n")}`);
+      if (!timedOut) console.error(`❌ [yt-dlp] exit ${code} for ${String(url).slice(0, 80)}:\n${err.trim().split("\n").slice(debugOn() ? -40 : -6).join("\n")}`);
       reject(e);
     });
   });
@@ -237,8 +309,68 @@ async function version() {
   const cmd = await ensureBinary();
   if (!cmd) return null;
   return new Promise((resolve) => {
-    try { require("child_process").execFile(cmd, ["--version"], { timeout: 15000 }, (err, out) => resolve(err ? null : String(out).trim())); } catch { resolve(null); }
+    try { require("child_process").execFile(cmd, ["--version"], { timeout: 15000 }, (err, out) => { const v = err ? null : String(out).trim(); if (v) binVersion = v; resolve(v); }); } catch { resolve(null); }
   });
+}
+
+// ---------------------------------------------------------------- keeping yt-dlp current
+// YouTube changes every few weeks and an old yt-dlp is the most common reason downloads suddenly stop. The copy this bot
+// downloaded itself is therefore refreshed automatically; a yt-dlp the host provides (YTDLP_PATH / PATH) is left alone.
+let updating = null;
+let lastUpdateAt = 0;
+
+/**
+ * Replace the managed yt-dlp with the newest release when there is one.
+ * @param {{force?: boolean, minAgeMs?: number}} [o] force: download even when the version looks current;
+ *   minAgeMs: skip when an update was already tried this recently (stops a broken source from causing a download loop)
+ * @returns {Promise<{updated: boolean, from?: string, to?: string, reason?: string, error?: string}>}
+ */
+function updateNow(o = {}) {
+  const target = deps.managedPath;
+  if (!target || resolved !== target) return Promise.resolve({ updated: false, reason: "this host provides its own yt-dlp (update it there)" });
+  if (updating) return updating;
+  if (o.minAgeMs && Date.now() - lastUpdateAt < o.minAgeMs) return Promise.resolve({ updated: false, reason: "checked recently" });
+  updating = (async () => {
+    try {
+      const from = await version();
+      const latest = await deps.latestTag();
+      lastUpdateAt = Date.now();
+      if (latest && from && latest === from && !o.force) return { updated: false, reason: "already the latest", from, to: latest };
+      if (!latest && !o.force) return { updated: false, reason: "could not reach GitHub to check", from };
+      const asset = standaloneAsset();
+      console.log(`⬇️  Updating yt-dlp ${from || "?"} → ${latest || "latest"}...`);
+      await deps.download(RELEASE_BASE + asset, target);
+      if (!(await probe(target))) throw new Error("the new yt-dlp does not run on this host");
+      binVersion = null;
+      const to = await version();
+      console.log(`✅ yt-dlp is now ${to || "updated"}`);
+      return { updated: true, from, to };
+    } catch (e) {
+      console.error("⚠️ yt-dlp update failed:", e.message);
+      return { updated: false, error: e.message };
+    } finally { updating = null; }
+  })();
+  return updating;
+}
+
+let upkeepStarted = false;
+/** Once at start (if the file is old) and then every few hours: refresh the managed yt-dlp when it is stale. */
+function startUpkeep() {
+  if (upkeepStarted || process.env.YTDLP_AUTO_UPDATE === "false") return;
+  upkeepStarted = true;
+  const check = () => {
+    const target = deps.managedPath;
+    let age = Infinity;
+    try { age = Date.now() - fs.statSync(target).mtimeMs; } catch { /* missing: nothing to refresh */ }
+    if (age > UPDATE_EVERY_MS) updateNow().catch(() => {});
+  };
+  setTimeout(check, 5000).unref();
+  setInterval(check, 6 * 3600 * 1000).unref();
+}
+
+/** Facts the error messages and .dltest report: is this host able to do YouTube at all? */
+function health() {
+  return { node: process.version, nodeOk: NODE_MAJOR >= MIN_NODE_FOR_YOUTUBE, jsRuntime: jsRuntimeFlag(), ipv4: String(process.env.YTDLP_IPV4 || "").toLowerCase() !== "false", managed: !!(deps.managedPath && resolved === deps.managedPath), cookies: cookieSummary() };
 }
 
 /** What the cookies setup looks like (counts only — never the values). */
@@ -255,4 +387,4 @@ function cookieSummary() {
   } catch { return { file, error: true }; }
 }
 
-module.exports = { version, cookieSummary, findCookiesFile, prepareCookies, ensureBinary, exec, json, buildArgs, standaloneAsset, BIN_DIR };
+module.exports = { _resetUpdateClock: () => { lastUpdateAt = 0; }, deps, updateNow, health, jsRuntimeFlag, versionAtLeast, version, cookieSummary, findCookiesFile, prepareCookies, ensureBinary, exec, json, buildArgs, standaloneAsset, BIN_DIR };
