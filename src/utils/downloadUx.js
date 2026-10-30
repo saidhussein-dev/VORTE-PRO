@@ -18,7 +18,7 @@ const mb = (n) => (n / 1024 / 1024).toFixed(1);
  */
 async function runDownload(sock, m, o) {
   const chat = m.key.remoteJid;
-  const s = await status(sock, chat, panel(o.title, o.intro), { quoted: m });
+  const s = await status(sock, chat, panel(o.title, o.intro), { quoted: m, buttonOnFinish: false }); // the sent file carries the channel button
   let result;
   try {
     result = await o.fetch();

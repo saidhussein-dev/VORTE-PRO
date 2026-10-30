@@ -29,14 +29,27 @@ const onOff = (v) => (v ? "✅ ON" : "❌ OFF");
  */
 async function status(sock, chat, text, opts = {}) {
   let sent = null;
-  try { sent = await sock.sendMessage(chat, { text }, opts.quoted ? { quoted: opts.quoted } : undefined); } catch { /* ignore */ }
+  // This message is edited later and a button message cannot be edited into plain text, so it carries no button itself.
+  try { sent = await sock.sendMessage(chat, { text }, { ...(opts.quoted ? { quoted: opts.quoted } : {}), channelButton: false }); } catch { /* ignore */ }
+  let edited = !!sent?.key;
   const edit = async (t) => {
     if (sent?.key) {
       try { await sock.sendMessage(chat, { text: t, edit: sent.key }); return; } catch { /* fall through */ }
     }
-    try { sent = await sock.sendMessage(chat, { text: t }); } catch { /* ignore */ }
+    try { sent = await sock.sendMessage(chat, { text: t }); edited = false; } catch { /* ignore */ }
   };
-  return { update: edit, finish: edit, fail: edit, key: sent?.key || null };
+  // The final result keeps its place (the edited message) and the channel button follows it as a separate message.
+  // opts.buttonOnFinish === false when the command's real output (a file) already carries the button.
+  const withButton = async (t, wantButton) => {
+    await edit(t);
+    if (wantButton && edited) { try { await require("./channelButton").sendFollowupIfSupported(sock, chat, opts.quoted ? { quoted: opts.quoted } : {}); } catch { /* the result is already delivered */ } }
+  };
+  return {
+    update: edit,
+    finish: (t) => withButton(t, opts.buttonOnFinish !== false),
+    fail: (t) => withButton(t, true),
+    key: sent?.key || null
+  };
 }
 
 module.exports = { MSG, panel, onOff, status };

@@ -50,17 +50,9 @@ const deps = {
   // Sends the interactive message. Throws if it cannot be sent.
   // Built the way the maintained Baileys button helpers do it: the interactiveMessage sits directly in the message
   // (NOT inside a viewOnceMessage envelope), a V2 message id, and the biz/interactive/native_flow node on the stanza.
+  // Sends the interactive message through the shared implementation (channelButton.js). Throws if it cannot be sent.
   async relayInteractive(sock, chat, content) {
-    const baileys = deps.baileys();
-    const isGroup = String(chat).endsWith("@g.us");
-    const userJid = sock.authState?.creds?.me?.id || sock.user?.id;
-    const msg = baileys.generateWAMessageFromContent(chat, content, {
-      logger: sock.logger, userJid, messageId: baileys.generateMessageIDV2(userJid), timestamp: new Date()
-    });
-    const additionalNodes = [{ tag: "biz", attrs: {}, content: [{ tag: "interactive", attrs: { type: "native_flow", v: "1" }, content: [{ tag: "native_flow", attrs: { v: "9", name: "mixed" } }] }] }];
-    if (!isGroup) additionalNodes.push({ tag: "bot", attrs: { biz_bot: "1" } });
-    await sock.relayMessage(chat, msg.message, { messageId: msg.key.id, additionalAttributes: {}, additionalNodes });
-    return msg;
+    return sharedRelay(sock, chat, content);
   }
 };
 
@@ -127,7 +119,7 @@ function intro(info) {
 }
 
 const reply = (display_text, key) => ({ name: "quick_reply", buttonParamsJson: JSON.stringify({ display_text, id: ID_PREFIX + key }) });
-const link = (display_text, url) => ({ name: "cta_url", buttonParamsJson: JSON.stringify({ display_text, url, merchant_url: url }) });
+const { link, channelLink, relayInteractive: sharedRelay } = require("./channelButton"); // one button implementation for the whole bot
 
 /** wa.me link that opens a chat with `number` and (optionally) puts `text` in the box, ready to send. */
 const waLink = (number, text) => `https://wa.me/${number}${text ? "?text=" + encodeURIComponent(text) : ""}`;
@@ -149,7 +141,7 @@ function buttons(ctx = {}) {
   const ownerNum = botInfo.ownerNumbers(ctx.sock)[0];
   const direct = GROUPS.filter((g) => g.direct);
   const more = GROUPS.filter((g) => !g.direct);
-  const out = [link("WhatsApp Channel", config.channel.url), link("GitHub Repository", GITHUB_URL)];
+  const out = [channelLink(), link("GitHub Repository", GITHUB_URL)];
 
   if (ctx.linkMode && botNum) {
     out.push(ownerNum ? link("Contact Owner", waLink(ownerNum)) : reply("Contact Owner", CONTACT_KEY));

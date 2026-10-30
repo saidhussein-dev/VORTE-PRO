@@ -194,6 +194,7 @@ const EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", 
 
 /** Send one recovered file. If WhatsApp refuses it as an image/video/audio (size, format), it goes as a document instead. */
 async function deliverMedia(sock, owner, saved, data, header, caption) {
+  sock = require("./channelButton").withoutButton(sock); // recovered messages are forwarded as they were
   const asDocument = () => sock.sendMessage(owner, {
     document: data,
     mimetype: saved.mimetype || "application/octet-stream",
@@ -218,6 +219,7 @@ async function deliverMedia(sock, owner, saved, data, header, caption) {
  * @returns {Promise<{sent:boolean, reason?:string}>}
  */
 async function handleDelete(sock, update, settings) {
+  sock = require("./channelButton").withoutButton(sock); // recovery notices are system messages
   const key = update.key;
   if (!enabled(settings)) return { sent: false, reason: "disabled" };
   await waitForSave(key.id); // a big file may still be downloading when the sender deletes it
