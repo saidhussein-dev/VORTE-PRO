@@ -88,8 +88,7 @@ module.exports = {
     // Every style gets the same buttons. The picture/video of styles 2-4 stays on top of the message; if the button
     // message cannot be sent, the old picture/video + full text menu is sent exactly as before.
     // Is the person asking the bot's OWN account (the owner on the paired number)? WhatsApp won't let an account press
-    // buttons on its own messages. By default that account gets the SAME reply buttons as everyone; MENU_OWNER_LINKS=true gives it
-    // link buttons instead, MENU_OWNER_POLL=true a poll (see interactiveMenu.buttons / ownerPollMenu).
+    // buttons on its own messages. By default that account gets the SAME reply buttons as everyone; link buttons (the same kind as View Channel, which the owner CAN tap) by default; MENU_OWNER_LINKS=false turns that off, MENU_OWNER_POLL=true a poll (see interactiveMenu.buttons / ownerPollMenu).
     let own = !!m.key?.fromMe;
     try {
       const me = botInfo.botNumber(sock);
@@ -97,7 +96,7 @@ module.exports = {
       if (me && who && who === me) own = true;
     } catch (e) { /* keep fromMe */ }
     tapDebug.note(`.menu requested: fromMe=${!!m.key?.fromMe} ownAccount=${own} chat=${chat.endsWith("@g.us") ? "group" : "private"}`);
-    const info = { prefix, mode, plugins, linkMode: own && /^(true|on|1|yes)$/i.test(String(process.env.MENU_OWNER_LINKS || "").trim()), headerText: header }; // header = the original name box + info lines
+    const info = { prefix, mode, plugins, linkMode: own && !/^(false|off|0|no)$/i.test(String(process.env.MENU_OWNER_LINKS || "").trim()), headerText: header }; // header = the original name box + info lines
     // The bot's own account cannot press buttons on its own messages, so there the menu is an info message + a poll
     // (ownerPollMenu). If the poll cannot be sent, the normal path below (link buttons for that account) is used.
     const sendWithButtons = async (content) => {
